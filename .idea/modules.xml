@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/../lms2-block/.idea/lms2-block.iml" filepath="$PROJECT_DIR$/../lms2-block/.idea/lms2-block.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../mpi-sppy/.idea/mpi-sppy.iml" filepath="$PROJECT_DIR$/../mpi-sppy/.idea/mpi-sppy.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/stochastic_optimization.iml" filepath="$PROJECT_DIR$/.idea/stochastic_optimization.iml" />
+    </modules>
+  </component>
+</project>
