@@ -73,11 +73,11 @@ if __name__ == "__main__":
     # Fichiers d'entrée (24 jours)
     # -----------------------------
     scenario_load_files = [
-        "microgrid_consumption_examples/24_days_example_1.csv",
-        "microgrid_consumption_examples/24_days_example_1.csv",
-        "microgrid_consumption_examples/24_days_example_1.csv",
-        "microgrid_consumption_examples/24_days_example_1.csv",
-        "microgrid_consumption_examples/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
     ]
     S = list(range(1, 6))
     prob = {s: 0.2 for s in S}
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     tmp_file = os.path.join("meteo_data", "temperature_24_days.csv")  # cols: timestamp, Temperature
 
     # -----------------------------
-    # Horizon 15 minutes (24 jours)
+    # Horizon 24 jours (15 minutes)
     # -----------------------------
     horizon = SimpleHorizon(
         tstart="2023-01-01 00:00:00",
@@ -209,7 +209,9 @@ if __name__ == "__main__":
     def opex_bat(_m, s):
         return _m.bat[s].cost_opex * _m.bat_emax0 * BAT_YEARS
     def repl_bat(_m):
-        return _m.bat[s1].cost_inv * _m.bat_emax0 * 0.635227665282 + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.403514186739 + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.256323374751
+        return (_m.bat[s1].cost_inv * _m.bat_emax0 * 0.635227665282
+                + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.403514186739
+                + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.256323374751)
 
     @m.Objective(sense=minimize)
     def total_cost(_m):
@@ -222,7 +224,7 @@ if __name__ == "__main__":
     # Solve
     # -----------------------------
     solver = SolverFactory('gurobi', tee=True, solver_io="direct")
-    res = solver.solve(m, options={'MIPGap': 0.01})
+    res = solver.solve(m, options={'MIPGap': 0.1})
 
     print("\n=== SOLUTION (Stoch 24 jours, sans diesel, Batt V3) ===")
     print(f"PV installé (W)        : {value(m.pv[s1].p_wp):,.1f}")

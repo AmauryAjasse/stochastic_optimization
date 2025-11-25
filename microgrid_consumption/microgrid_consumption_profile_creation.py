@@ -48,13 +48,10 @@ Les fonctions domestiques/communautaires utilisées proviennent des scripts util
 """
 
 from typing import Dict, Tuple, List, Optional
-from pathlib import Path
 import numpy as np
-import pandas as pd
 
 # Import des générateurs existants (fichiers fournis par l'utilisateur)
-import domestic_loads_profiles as dl    # fournit les profils domestiques (8760)  # user module
-import community_wide_loads_profiles as cl  # fournit les profils communautaires (8760)  # user module
+from microgrid_consumption import community_wide_loads_profiles as cl, domestic_loads_profiles as dl
 
 
 # -------------------------------

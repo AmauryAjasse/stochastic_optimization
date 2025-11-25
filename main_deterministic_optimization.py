@@ -1,5 +1,4 @@
 from pyomo.environ import *
-from pyomo.core import NonNegativeReals, Binary, PositiveReals, Reals, Any
 from pyomo.network import Port
 
 from lms2.tools.data_processing import read_data, load_data
@@ -10,6 +9,8 @@ from lms2.tools.post_processing import *
 from block_pv import *
 from block_battery import *
 from battery_factory import make_battery
+from functions_constraint import bilan_puissance_rule
+from functions_economic import *
 from block_diesel_generator import *
 
 import matplotlib.pyplot as plt
@@ -30,6 +31,9 @@ UB=10e6 # Upper Bound by default
 if __name__ == '__main__':
     with_diesel_generator = 0                 # 0 : without diesel, 1 : diesel_V1, 2 : diesel_V2 (with SOS2)
     battery_model = 3                         # 2 : battery_V2, 3 : battery_V3
+    discount_rate = 0.095                     # taux d'actualisation (0.095 pour Madagascar)
+    total_duration = 20                       # durée du micro-réseau en années
+    battery_replacement_years = [5, 10, 15]   # année de remplacement du pack de batterie
 
     # p0=1 # puissance nominale du générateur diesel en W
     p0_list = [7000]
@@ -39,15 +43,15 @@ if __name__ == '__main__':
 
     for i in range(len(p0_list)):
         m = ConcreteModel()
-        horizon = SimpleHorizon(tstart='2023-01-01 03:15:00', tend='2023-12-31 23:00:00', time_step='15 minutes', tz='Indian/Antananarivo')
+        horizon = SimpleHorizon(tstart='2023-01-01 04:00:00', tend='2023-01-24 20:45:00', time_step='15 minutes', tz='Indian/Antananarivo')
         m.time = RangeSet(0, horizon.horizon.total_seconds(), horizon.horizon.total_seconds()/(horizon.horizon.total_seconds()/900))
 
         t1 = datetime.datetime.now()
-        irradiance_kw_2019 = read_data(horizon, os.path.join(os.getcwd(), 'data', 'irradiance_solcast_formatted.csv'), usecols=[1, 2],
+        irradiance_kw_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'irradiance_solcast_formatted.csv'), usecols=[1, 2],
                               tz_data='Indian/Antananarivo')
-        temperature_2019 = read_data(horizon, os.path.join(os.getcwd(), 'data', 'temperature_solcast_formatted.csv'), usecols=[1, 2],
+        temperature_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'temperature_solcast_formatted.csv'), usecols=[1, 2],
                               tz_data='Indian/Antananarivo')
-        charge_2019 = read_data(horizon, os.path.join(os.getcwd(), 'data', 'energy_total_2023.csv'), usecols=[1, 2],  tz_data='Indian/Antananarivo', date_format=None, sep=';')
+        charge_2019 = read_data(horizon, os.path.join(os.getcwd(), 'microgrid_consumption', 'scenarios_24_days', '24_days_example_1.csv'), usecols=["timestamp", "aggregate_wh"],  tz_data='Indian/Antananarivo')
         charge_2019_W = 1000 * charge_2019/(horizon.time_step.total_seconds()/3600)
         print('Elapsed time read data: ' + str(datetime.datetime.now() - t1))
 
@@ -68,94 +72,70 @@ if __name__ == '__main__':
 
 
         """The power balance constraints are defined in the cases without and with diesel generator."""
-        if with_diesel_generator == 0:
-            @m.Constraint(m.time)
-            def bilan_puissance(b, t):
-                return b.bat.p[t] + b.pv.p[t] == b.charge.p[t]
-        else:
-            @m.Constraint(m.time)
-            def bilan_puissance(b, t):
-                return b.bat.p[t] + b.pv.p[t] + b.gen.p[t] == b.charge.p[t]
+        m.bilan_puissance = Constraint(m.time, rule = lambda b, t: bilan_puissance_rule(b, t, with_diesel_generator=with_diesel_generator))
 
         """The objective functions are defined in the cases without and with diesel generator."""
-        if with_diesel_generator == 0:
-            @m.Objective()
-            def cout_total(b):
-                return (b.pv.cost_inv * b.pv.p_wp                                    # invest pv
-                        + b.pv.cost_opex * b.pv.p_wp * 9.64955841794                 # maintenance pv
-                        + b.bat.cost_inv * b.bat.emax0                                # invest batt
-                        + b.bat.cost_opex * b.bat.emax0 * 9.64955841794               # maintenance batt
-                        + b.bat.cost_inv * b.bat.emax0 * 0.635227665282               # replacement batt annee 5
-                        + b.bat.cost_inv * b.bat.emax0 * 0.403514186739               # replacement batt annee 10
-                        + b.bat.cost_inv * b.bat.emax0 * 0.256323374751               # replacement batt annee 15
-                        )
-        else:
-            @m.Objective()
-            def cout_total(b):
-                return (b.pv.cost_inv * b.pv.p_wp                                    # invest pv
-                        + b.pv.cost_opex * b.pv.p_wp * 9.64955841794                 # maintenance pv
-                        + b.bat.cost_inv * b.bat.emax0                                # invest batt
-                        + b.bat.cost_opex * b.bat.emax0 * 9.64955841794               # maintenance batt
-                        + b.bat.cost_inv * b.bat.emax0 * 0.635227665282               # replacement batt annee 5
-                        + b.bat.cost_inv * b.bat.emax0 * 0.403514186739               # replacement batt annee 10
-                        + b.bat.cost_inv * b.bat.emax0 * 0.256323374751               # replacement batt annee 15
-                        + b.gen.cost_inv * b.gen.p0                                  # invest diesel
-                        + b.gen.cost_opex * b.gen.p0 * 9.64955841794                 # maintenance diesel
-                        + sum(b.gen.e_th[t] * b.gen.fuel_cost * b.gen.fuel_consumption for t in b.time) * 9.64955841794 # consumption diesel
-                        )
+        m.total_cost = Objective(rule = lambda b: cout_total_rule(b, with_diesel_generator=with_diesel_generator))
+
         print('Elapsed time instantiation model: ' + str(datetime.datetime.now() - t2))
 
         t3 = datetime.datetime.now()
+        # Lire le CSV 24 jours (colonnes: timestamp, aggregate_wh)
+        df_load = pd.read_csv(os.path.join(os.getcwd(), 'microgrid_consumption', 'scenarios_24_days', '24_days_example_1.csv'),
+                              parse_dates=[0])
+
+        # Convertir Wh/15min -> W (puissance moyenne sur le pas) : W = Wh / 0.25h = 4 * Wh
+        val_col = 'aggregate_wh' if 'aggregate_wh' in df_load.columns else df_load.columns[1]
+        W_vals = (df_load[val_col].values * 4.0).tolist()
+
+        # Sécuriser la longueur = nb de pas de l’horizon
+        expected_pts = len([t for t in m.time])
+        if len(W_vals) != expected_pts:
+            if len(W_vals) > expected_pts:
+                W_vals = W_vals[:expected_pts]
+            else:
+                W_vals = W_vals + [W_vals[-1]] * (expected_pts - len(W_vals))
+
+        # Construire l’index EXACT utilisé par load_data (clés = horizon.map[i])
+        time_keys = pd.DatetimeIndex([horizon.map[i] for i in m.time])
+        W_series = pd.Series(W_vals, index=time_keys)
+
+        # Charger dans le Param de charge
+        load_data(horizon, m.charge.p, W_series)
+
         load_data(horizon, m.pv.irr, irradiance_kw_2019['Irradiance'])
         load_data(horizon, m.pv.tmp, temperature_2019['Temperature'])
         load_data(horizon, m.bat.tmp, temperature_2019['Temperature'])
-        load_data(horizon, m.charge.p, charge_2019_W['kilowatt_hours'])
+        # load_data(horizon, m.charge.p, charge_2019_W['kilowatt_hours'])
         print('Elapsed time load data: ' + str(datetime.datetime.now() - t3))
 
         t4 = datetime.datetime.now()
         sol = SolverFactory('gurobi', tee=True, solver_io="direct")
-        res = sol.solve(m, options={'MIPGap': 0.01})
+        res = sol.solve(m, options={'MIPGap': 0.1})
         print('Elapsed time solve: ' + str(datetime.datetime.now() - t4))
         print('TEMPS TOTAL : ' + str(datetime.datetime.now() - t1))
 
 
-
-
-        """ TRAITEMENT DES RESULTATS """
+        """ AFFICHAGE DES RESULTATS """
         if with_diesel_generator ==0:
-            print("La puissance installée des panneaux photovoltaïques vaut {} W,\n et la capacité installée du pack batterie vaut {} Wh.".format(m.pv.p_wp.value, m.bat.emax0))
+            print("La puissance installée des panneaux photovoltaïques vaut {} W,\n et la capacité installée du pack batterie vaut {} Wh.".format(value(m.pv.p_wp), value(m.bat.emax0)))
 
         else:
             print("La puissance installée des panneaux photovoltaïques vaut {} W,\n la capacité installée du pack batterie vaut {} Wh,\n et la puissance du générateur Diesel vaut {} W".format(m.pv.p_wp.value, m.bat.emax0, m.gen.p0.value))
-        print("Le coût total est de {} €".format(m.cout_total()))
+        print("Le coût total est de {} €".format(value(m.total_cost)))
 
-        @m.Expression()
-        def capex_pv(b):
-            return b.pv.cost_inv * b.pv.p_wp.value
-
-        @m.Expression()
-        def opex_pv(b):
-            return b.pv.cost_opex * b.pv.p_wp.value * 9.64955841794
-
-        @m.Expression()
-        def capex_bat(b):
-            return b.bat.cost_inv * b.bat.emax0
-
-        @m.Expression()
-        def opex_bat(b):
-            return b.bat.cost_opex * b.bat.emax0 * 9.64955841794
-
-        @m.Expression()
-        def repl_bat(b):
-            return (b.bat.cost_inv * b.bat.emax0 * 0.635227665282
-                    + b.bat.cost_inv * b.bat.emax0 * 0.403514186739
-                    + b.bat.cost_inv * b.bat.emax0 * 0.256323374751)
+        """On calcule les expressions de tous les coûts qu'on va ensuite vouloir afficher dans le tableau récapitulatif."""
+        m.capex_pv = Expression(rule=lambda b: capex_pv_rule(b))
+        m.capex_bat = Expression(rule=lambda b: capex_bat_rule(b))
+        m.opex_pv = Expression(rule=lambda b: opex_pv_rule(b, discount_rate=discount_rate, total_duration=total_duration))
+        m.opex_bat = Expression(rule=lambda b: opex_bat_rule(b, discount_rate=discount_rate, total_duration=total_duration))
+        m.repl_bat = Expression(rule=lambda b: repl_bat_rule(b, discount_rate=discount_rate, replacement_year=battery_replacement_years))
 
         @m.Expression()
         def energie_totale_consomme(b):
             return (sum(b.charge.p[t] for t in b.time)
                     * horizon.time_step.total_seconds() / 3600
-                    * 20 / 1000)  # en kWh
+                    * 20)  # en Wh
 
         if with_diesel_generator != 0:
             @m.Expression()
@@ -170,8 +150,8 @@ if __name__ == '__main__':
             def cost_total_fuel(b):
                 return sum(b.gen.e_th[t] * b.gen.fuel_cost * b.gen.fuel_consumption for t in b.time) * 9.64955841794
 
-        print("L'énergie totale produite par les panneaux et le générateur vaut {} kWh".format(m.energie_totale_consomme()))
-        lcoe_value = value(m.cout_total()) / value(m.energie_totale_consomme())
+        print("L'énergie totale consommée vaut {} Wh".format(m.energie_totale_consomme()))
+        lcoe_value = value(value(m.total_cost)) / value(m.energie_totale_consomme())
         print("LCOE : {:.8f} €/kWh".format(lcoe_value))
 
         """Cost details without and with diesel generation."""
@@ -199,7 +179,7 @@ if __name__ == '__main__':
                     "solar panel": m.capex_pv() + m.opex_pv(),
                     "batteries": m.capex_bat() + m.opex_bat() + m.repl_bat(),
                     "diesel generator": 0,
-                    "total": m.cout_total()
+                    "total": m.total_cost()
                 }
             }
         else:
@@ -226,7 +206,7 @@ if __name__ == '__main__':
                     "solar panel": m.capex_pv() + m.opex_pv(),
                     "batteries": m.capex_bat() + m.opex_bat() + m.repl_bat(),
                     "diesel generator": m.capex_gen() + m.opex_gen() + m.cost_total_fuel(),
-                    "total": m.cout_total()
+                    "total": m.total_cost()
                 }
             }
 
@@ -238,7 +218,7 @@ if __name__ == '__main__':
         if with_diesel_generator != 0:
             print("coût du diesel consommé : {}€".format(m.cost_total_fuel()))
 
-        total_cost.append(value(m.cout_total()))
+        total_cost.append(value(m.total_cost()))
         pv_wp.append(value(m.pv.p_wp))
         bat_capa.append(value(m.bat.emax0))
 
