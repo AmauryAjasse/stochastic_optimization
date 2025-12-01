@@ -4,125 +4,90 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-def plot_example(values, dt_hours, time_on: str = "x"):
-    """
-    Trace un profil sur une journée à partir d'une liste de valeurs et d'un pas de temps.
+from pyomo.environ import *
+from tabulate import tabulate
+from lms2.tools.post_processing import *
+import os
+import pickle
 
-    Paramètres
-    ----------
-    values : list[float] | array-like
-        Les valeurs échantillonnées sur la journée (ex: puissance, consommation, etc.).
-    dt_hours : float
-        Pas de temps en heures. Exemples:
-          - 1.0  -> 24 points (horaire)
-          - 0.25 -> 96 points (quart d'heure)
-    time_on : {"x", "y"}
-        Où placer l'axe du temps : "x" (abscisse, par défaut) ou "y" (ordonnée).
+def cost_table(m, with_diesel_generator=0):
+    cost_data = {
+        "coût d'investissement (€)": {
+            "solar panel": value(m.capex_pv),
+            "batteries": value(m.capex_bat),
+            "diesel generator": 0 if with_diesel_generator==0 else value(m.capex_gen),
+            "total": value(m.capex_pv) + value(m.capex_bat)
+        },
+        "coût d'opération (€)": {
+            "solar panel": value(m.opex_pv),
+            "batteries": value(m.opex_bat),
+            "diesel generator": 0 if with_diesel_generator==0 else value(m.opex_gen) + value(m.cost_total_fuel),
+            "total": value(m.opex_pv) + value(m.opex_bat)
+        },
+        "coût de remplacement (€)": {
+            "solar panel": 0,
+            "batteries": value(m.repl_bat),
+            "diesel generator": 0,
+            "total": value(m.repl_bat)
+        },
+        "coût total (€)": {
+            "solar panel": value(m.capex_pv) + value(m.opex_pv),
+            "batteries": value(m.capex_bat) + value(m.opex_bat) + value(m.repl_bat),
+            "diesel generator": 0 if with_diesel_generator==0 else value(m.capex_gen) + value(m.opex_gen) + value(m.cost_total_fuel),
+            "total": value(m.total_cost)
+        }
+    }
 
-    Remarques
-    ---------
-    - Si len(values) = 24/dt_hours (à un arrondi près), l'axe temporel est borné à 0–24 h.
-    - Sinon, on trace quand même, avec un avertissement, sur la durée len(values)*dt_hours.
-    """
-    if dt_hours <= 0:
-        raise ValueError("dt_hours doit être strictement positif.")
+    # Conversion en DataFrame
+    df_costs = pd.DataFrame.from_dict(cost_data, orient='index')
 
-    y = np.asarray(values, dtype=float)
-    n = y.size
-    if n == 0:
-        raise ValueError("La liste 'values' est vide.")
+    # Affichage du tableau avec tabulate
+    print(tabulate(df_costs, headers='keys', tablefmt='grid'))
+    if with_diesel_generator != 0:
+        print("coût du diesel consommé : {}€".format(m.cost_total_fuel()))
 
-    # Axe temps en heures
-    t = np.arange(n) * dt_hours  # 0, dt, 2*dt, ...
+def plot_results_deterministic(m, horizon, with_diesel_generator=0, file_name="test"):
+    # Visualisation des résultats
+    n_points = len(horizon.current)
+    index_jours = np.arange(n_points) / (3600 * 24 / horizon.time_step.total_seconds())
 
-    # Vérification "profil sur une journée"
-    expected = 24.0 / dt_hours
-    expected_int = int(round(expected))
-    is_full_day = abs(expected - expected_int) < 1e-6 and (n == expected_int)
-
-    if not is_full_day:
-        print(
-            f"⚠️ Avertissement: {n} points pour dt={dt_hours} h "
-            f"(attendu ~{round(expected)} pour couvrir 24 h). "
-            f"Durée tracée: {t[-1]:.2f} h.",
-            flush=True
-        )
-
-    # Petite fonction pour étiquettes HH:MM
-    def hhmm(hours_float):
-        total_min = int(round(hours_float * 60))
-        hh = (total_min // 60) % 24
-        mm = total_min % 60
-        return f"{hh:02d}:{mm:02d}"
-
-    major_ticks = [0, 6, 12, 18, 24]
-
-    fig, ax = plt.subplots()
-
-    if time_on.lower() == "y":
-        # Temps en ordonnée
-        ax.plot(y, t, marker='o' if n <= 48 else None)
-        ax.set_xlabel("Energie consommée (kWh)")
-        ax.set_ylabel("Heure de la journée")
-        if is_full_day:
-            ax.set_ylim(0, 24)
-            ax.set_yticks(major_ticks)
-            ax.set_yticklabels([hhmm(h) for h in major_ticks])
-        else:
-            ax.set_yticks(np.linspace(0, t[-1], 5))
-            ax.set_yticklabels([hhmm(h) for h in np.linspace(0, t[-1], 5)])
+    if with_diesel_generator == 0:
+        fig, ax = plt.subplots(nrows=4, ncols=1, sharex='all', figsize=(15, 6))
+        pplot(m.bat.p, m.pv.p, m.charge.p,
+              ax=ax[0],
+              fig=fig,
+              index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2),
+              ylabel='Power (W)')
+        pplot(m.bat.soc, ax=ax[1], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='SOC (%)')
+        pplot(m.bat.e_loss, ax=ax[2], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
+        pplot(m.bat.emax_series, ax=ax[3], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
     else:
-        # Temps en abscisse (par défaut)
-        ax.plot(t, y, marker='o' if n <= 48 else None)
-        ax.set_xlabel("Heure de la journée")
-        ax.set_ylabel("Energie consommée (kWh)")
-        if is_full_day:
-            ax.set_xlim(0, 24)
-            ax.set_xticks(major_ticks)
-            ax.set_xticklabels([hhmm(h) for h in major_ticks])
-        else:
-            ax.set_xticks(np.linspace(0, t[-1], 5))
-            ax.set_xticklabels([hhmm(h) for h in np.linspace(0, t[-1], 5)])
+        fig, ax = plt.subplots(nrows=4, ncols=1, sharex='all', figsize=(15, 6))
+        pplot(m.bat.p, m.pv.p, m.charge.p, m.gen.p,
+              ax=ax[0],
+              fig=fig,
+              index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2),
+              ylabel='Power (W)')
+        pplot(m.bat.soc, ax=ax[1], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='SOC (%)')
+        pplot(m.bat.tmp, ax=ax[2], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='Température (°C)')
+        pplot(m.bat.emax_series, ax=ax[3], fig=fig, index=index_jours,
+              bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
 
-    ax.grid(True, alpha=0.3)
-    ax.set_title("Profil sur 24h - Milling 10 kW")
-    plt.tight_layout()
+    for axis in ax:
+        axis.set_xlabel(axis.get_xlabel(), fontsize=17)
+        axis.set_ylabel(axis.get_ylabel(), fontsize=17)
+        axis.tick_params(axis='both', labelsize=15)
+
+    filename = f"results_image/{file_name}.pickle"
+
+    # --- Sauvegarder la figure ---
+    with open(filename, 'wb') as f:
+        pickle.dump(fig, f)
     plt.show()
-
-
-# # --- Exemples d'utilisation ---
-# if __name__ == "__main__":
-#     # Exemple 1 : pas horaire (24 points)
-#     vals_heure = [0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 5, 0, 0, 0, 2.5, 2.5, 0, 5, 0, 0, 0, 0, 0, 0]
-#     plot_example(vals_heure, 1.0)              # temps en X (classique)
-#     # plot_example(vals_heure, 1.0, time_on="y")  # temps en Y si vous préférez
-#
-#     # Exemple 2 : pas quart d'heure (96 points)
-#     x = np.linspace(0, 2*np.pi, 96, endpoint=False)
-#     vals_qh = [0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                10, 10, 0, 0,
-#                0, 10, 0, 10,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 10, 0, 0,
-#                10, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 10, 10,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,
-#                0, 0, 0, 0,]
-#     plot_example(vals_qh, 0.25)
-
-

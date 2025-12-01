@@ -5,7 +5,13 @@ de mon optimisation, qu'elle soit déterministe ou stochastique."""
 def capex_pv_rule(b):
     """Calcule le CAPEX des modules phovoltaïques en multipliant le coût d'investissement des panneaux en €/W par
     la puissance installée en W."""
-    return b.pv.cost_inv * b.pv.p_wp.value
+    return b.pv.cost_inv * b.pv.p_wp
+
+def capex_pv_stoch_rule(b):
+    """Calcule le CAPEX des modules phovoltaïques en multipliant le coût d'investissement des panneaux en €/W par
+        la puissance installée en W. Ce prix est commun à tous les scénarios."""
+    s1 = list(b.S)[0]
+    return b.pv[s1].cost_inv * b.pv[s1].p_wp
 
 
 def capex_bat_rule(b):
@@ -16,7 +22,7 @@ def capex_bat_rule(b):
 def opex_pv_rule(b, discount_rate=1, total_duration=20):
     """Calcule le OPEX des modules phovoltaïques en multipliant le coût d'opération des panneaux en €/W/an par
     la puissance installée en W et par un facteur faisant intervenir le taux d'actualisation sur 20 ans."""
-    return b.pv.cost_opex * b.pv.p_wp.value * sum(1 / (1+discount_rate)**i for i in range(0, total_duration))
+    return b.pv.cost_opex * b.pv.p_wp * sum(1 / (1+discount_rate)**i for i in range(0, total_duration))
 
 
 def opex_bat_rule(b, discount_rate=1, total_duration=20):
@@ -26,22 +32,18 @@ def opex_bat_rule(b, discount_rate=1, total_duration=20):
     return b.bat.cost_opex * b.bat.emax0 * sum(1 / (1+discount_rate)**i for i in range(0, total_duration))
 
 
-def repl_bat_rule(b, discount_rate=1, replacement_year=[5]):
+def repl_bat_rule(b, discount_rate=1, replacement_year=[5, 10, 15]):
     """Calcule le coût de remplacement des batteries en multipliant le coût d'investissement des batteries en €/Wh par
         l'énergie maximale qui peut être stockée en Wh et par un facteur faisant intervenir le taux
         d'actualisation. On rentre aussi les années"""
     return sum(b.bat.cost_inv * b.bat.emax0 / (1 + discount_rate)**i for i in replacement_year)
 
-def cout_total_rule(b, with_diesel_generator=0):
+def cout_total_rule(b, with_diesel_generator=0, discount_rate=1, total_duration=20, replacement_year=[5, 10, 15]):
     if with_diesel_generator == 0:
-        return (b.pv.cost_inv * b.pv.p_wp  # invest pv
-            + b.pv.cost_opex * b.pv.p_wp * 9.64955841794  # maintenance pv
-            + b.bat.cost_inv * b.bat.emax0  # invest batt
-            + b.bat.cost_opex * b.bat.emax0 * 9.64955841794  # maintenance batt
-            + b.bat.cost_inv * b.bat.emax0 * 0.635227665282  # replacement batt annee 5
-            + b.bat.cost_inv * b.bat.emax0 * 0.403514186739  # replacement batt annee 10
-            + b.bat.cost_inv * b.bat.emax0 * 0.256323374751  # replacement batt annee 15
-            )
+        capex = capex_pv_rule(b) + capex_bat_rule(b)
+        opex = opex_pv_rule(b, discount_rate, total_duration) + opex_bat_rule(b, discount_rate, total_duration)
+        repl = repl_bat_rule(b, discount_rate, replacement_year)
+        return capex + opex + repl
     else:
         return (b.pv.cost_inv * b.pv.p_wp  # invest pv
                 + b.pv.cost_opex * b.pv.p_wp * 9.64955841794  # maintenance pv

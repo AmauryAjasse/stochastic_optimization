@@ -10,7 +10,9 @@ from block_pv import *
 from block_battery import *
 from battery_factory import make_battery
 from functions_constraint import bilan_puissance_rule
+import functions_visualisation as visu
 from functions_economic import *
+from functions_useful import *
 from block_diesel_generator import *
 
 import matplotlib.pyplot as plt
@@ -41,15 +43,16 @@ if __name__ == '__main__':
     pv_wp=[]
     bat_capa=[]
 
+
     for i in range(len(p0_list)):
         m = ConcreteModel()
-        horizon = SimpleHorizon(tstart='2023-01-01 04:00:00', tend='2023-01-24 20:45:00', time_step='15 minutes', tz='Indian/Antananarivo')
+        horizon = SimpleHorizon(tstart='2023-01-01 00:00:00', tend='2023-01-24 23:45:00', time_step='15 minutes', tz='Indian/Antananarivo')
         m.time = RangeSet(0, horizon.horizon.total_seconds(), horizon.horizon.total_seconds()/(horizon.horizon.total_seconds()/900))
 
         t1 = datetime.datetime.now()
-        irradiance_kw_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'irradiance_solcast_formatted.csv'), usecols=[1, 2],
+        irradiance_kw_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'irradiance_24_days.csv'), usecols=[0, 1],
                               tz_data='Indian/Antananarivo')
-        temperature_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'temperature_solcast_formatted.csv'), usecols=[1, 2],
+        temperature_2019 = read_data(horizon, os.path.join(os.getcwd(), 'meteo_data', 'temperature_24_days.csv'), usecols=[0, 1],
                               tz_data='Indian/Antananarivo')
         charge_2019 = read_data(horizon, os.path.join(os.getcwd(), 'microgrid_consumption', 'scenarios_24_days', '24_days_example_1.csv'), usecols=["timestamp", "aggregate_wh"],  tz_data='Indian/Antananarivo')
         charge_2019_W = 1000 * charge_2019/(horizon.time_step.total_seconds()/3600)
@@ -75,14 +78,13 @@ if __name__ == '__main__':
         m.bilan_puissance = Constraint(m.time, rule = lambda b, t: bilan_puissance_rule(b, t, with_diesel_generator=with_diesel_generator))
 
         """The objective functions are defined in the cases without and with diesel generator."""
-        m.total_cost = Objective(rule = lambda b: cout_total_rule(b, with_diesel_generator=with_diesel_generator))
+        m.total_cost = Objective(rule = lambda b: cout_total_rule(b, with_diesel_generator=with_diesel_generator, discount_rate=discount_rate, total_duration=total_duration, replacement_year=battery_replacement_years))
 
         print('Elapsed time instantiation model: ' + str(datetime.datetime.now() - t2))
 
         t3 = datetime.datetime.now()
         # Lire le CSV 24 jours (colonnes: timestamp, aggregate_wh)
-        df_load = pd.read_csv(os.path.join(os.getcwd(), 'microgrid_consumption', 'scenarios_24_days', '24_days_example_1.csv'),
-                              parse_dates=[0])
+        df_load = pd.read_csv(os.path.join(os.getcwd(), 'microgrid_consumption/scenarios_24_days/24_days_example_1.csv'), parse_dates=[0])
 
         # Convertir Wh/15min -> W (puissance moyenne sur le pas) : W = Wh / 0.25h = 4 * Wh
         val_col = 'aggregate_wh' if 'aggregate_wh' in df_load.columns else df_load.columns[1]
@@ -121,7 +123,7 @@ if __name__ == '__main__':
             print("La puissance installée des panneaux photovoltaïques vaut {} W,\n et la capacité installée du pack batterie vaut {} Wh.".format(value(m.pv.p_wp), value(m.bat.emax0)))
 
         else:
-            print("La puissance installée des panneaux photovoltaïques vaut {} W,\n la capacité installée du pack batterie vaut {} Wh,\n et la puissance du générateur Diesel vaut {} W".format(m.pv.p_wp.value, m.bat.emax0, m.gen.p0.value))
+            print("La puissance installée des panneaux photovoltaïques vaut {} W,\n la capacité installée du pack batterie vaut {} Wh,\n et la puissance du générateur Diesel vaut {} W".format(value(m.pv.p_wp), value(m.bat.emax0), value(m.gen.p0)))
         print("Le coût total est de {} €".format(value(m.total_cost)))
 
         """On calcule les expressions de tous les coûts qu'on va ensuite vouloir afficher dans le tableau récapitulatif."""
@@ -131,11 +133,8 @@ if __name__ == '__main__':
         m.opex_bat = Expression(rule=lambda b: opex_bat_rule(b, discount_rate=discount_rate, total_duration=total_duration))
         m.repl_bat = Expression(rule=lambda b: repl_bat_rule(b, discount_rate=discount_rate, replacement_year=battery_replacement_years))
 
-        @m.Expression()
-        def energie_totale_consomme(b):
-            return (sum(b.charge.p[t] for t in b.time)
-                    * horizon.time_step.total_seconds() / 3600
-                    * 20)  # en Wh
+        m.energie_totale_consomme = Expression(rule=lambda b: energie_totale_consomme_rule(b, horizon=horizon))
+
 
         if with_diesel_generator != 0:
             @m.Expression()
@@ -150,161 +149,17 @@ if __name__ == '__main__':
             def cost_total_fuel(b):
                 return sum(b.gen.e_th[t] * b.gen.fuel_cost * b.gen.fuel_consumption for t in b.time) * 9.64955841794
 
-        print("L'énergie totale consommée vaut {} Wh".format(m.energie_totale_consomme()))
-        lcoe_value = value(value(m.total_cost)) / value(m.energie_totale_consomme())
+        print("L'énergie totale consommée vaut {} Wh".format(value(m.energie_totale_consomme)))
+        lcoe_value = value(value(m.total_cost)) / value(value(m.energie_totale_consomme))
         print("LCOE : {:.8f} €/kWh".format(lcoe_value))
 
-        """Cost details without and with diesel generation."""
-        if with_diesel_generator == 0:
-            cost_data = {
-                "coût d'investissement (€)": {
-                    "solar panel": m.capex_pv(),
-                    "batteries": m.capex_bat(),
-                    "diesel generator": 0,
-                    "total": m.capex_pv() + m.capex_bat()
-                },
-                "coût d'opération (€)": {
-                    "solar panel": m.opex_pv(),
-                    "batteries": m.opex_bat(),
-                    "diesel generator": 0,
-                    "total": m.opex_pv() + m.opex_bat()
-                },
-                "coût de remplacement (€)": {
-                    "solar panel": 0,
-                    "batteries": m.repl_bat(),
-                    "diesel generator": 0,
-                    "total": m.repl_bat()
-                },
-                "coût total (€)": {
-                    "solar panel": m.capex_pv() + m.opex_pv(),
-                    "batteries": m.capex_bat() + m.opex_bat() + m.repl_bat(),
-                    "diesel generator": 0,
-                    "total": m.total_cost()
-                }
-            }
-        else:
-            cost_data = {
-                "coût d'investissement (€)": {
-                    "solar panel": m.capex_pv(),
-                    "batteries": m.capex_bat(),
-                    "diesel generator": m.capex_gen(),
-                    "total": m.capex_pv() + m.capex_bat() + m.capex_gen()
-                },
-                "coût d'opération (€)": {
-                    "solar panel": m.opex_pv(),
-                    "batteries": m.opex_bat(),
-                    "diesel generator": m.opex_gen() + m.cost_total_fuel(),
-                    "total": m.opex_pv() + m.opex_bat() + m.opex_gen() + m.cost_total_fuel()
-                },
-                "coût de remplacement (€)": {
-                    "solar panel": 0,
-                    "batteries": m.repl_bat(),
-                    "diesel generator": 0,
-                    "total": m.repl_bat()
-                },
-                "coût total (€)": {
-                    "solar panel": m.capex_pv() + m.opex_pv(),
-                    "batteries": m.capex_bat() + m.opex_bat() + m.repl_bat(),
-                    "diesel generator": m.capex_gen() + m.opex_gen() + m.cost_total_fuel(),
-                    "total": m.total_cost()
-                }
-            }
+        """On visualise les coûts détaillés dans un tableau"""
+        visu.cost_table(m, with_diesel_generator=with_diesel_generator)
 
-        # Conversion en DataFrame
-        df_costs = pd.DataFrame.from_dict(cost_data, orient='index')
-
-        # Affichage du tableau avec tabulate
-        print(tabulate(df_costs, headers='keys', tablefmt='grid'))
-        if with_diesel_generator != 0:
-            print("coût du diesel consommé : {}€".format(m.cost_total_fuel()))
-
-        total_cost.append(value(m.total_cost()))
+        total_cost.append(value(m.total_cost))
         pv_wp.append(value(m.pv.p_wp))
         bat_capa.append(value(m.bat.emax0))
 
         # Visualisation des résultats
-        n_points = len(horizon.current)
-        index_jours = np.arange(n_points) / (3600 * 24 / horizon.time_step.total_seconds())
+        visu.plot_results_deterministic(m, horizon, with_diesel_generator=with_diesel_generator)
 
-        if with_diesel_generator == 0:
-            fig, ax = plt.subplots(nrows=4, ncols=1, sharex='all', figsize=(15, 6))
-            pplot(m.bat.p, m.pv.p, m.charge.p,
-                  ax=ax[0],
-                  fig=fig,
-                  index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2),
-                  ylabel='Power (W)')
-            pplot(m.bat.soc, ax=ax[1], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='SOC (%)')
-            pplot(m.bat.e_loss, ax=ax[2], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
-            pplot(m.bat.emax_series, ax=ax[3], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
-        else:
-            fig, ax = plt.subplots(nrows=4, ncols=1, sharex='all', figsize=(15, 6))
-            pplot(m.bat.p, m.pv.p, m.charge.p, m.gen.p,
-                  ax=ax[0],
-                  fig=fig,
-                  index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2),
-                  ylabel='Power (W)')
-            pplot(m.bat.soc, ax=ax[1], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='SOC (%)')
-            pplot(m.bat.tmp, ax=ax[2], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='Température (°C)')
-            pplot(m.bat.emax_series, ax=ax[3], fig=fig, index=index_jours,
-                  bbox_to_anchor=(0, -0.12, 1, 0.2), ylabel='energy max battery')
-
-        # pplot(m.pv.p_curt, ax=ax[1][0], title='Puissance PV perdue', fig=fig, index=index_jours,
-        #       bbox_to_anchor=(0, -0.2, 1, 0.2), ylabel='Puissance (W)')
-
-        # if with_diesel_generator==0:
-        #     pplot(m.pv.p, ax=ax[1][1], title='Puissance PV', fig=fig, index=index_jours,
-        #           bbox_to_anchor=(0, -0.2, 1, 0.2), ylabel='Puissance (W)')
-        # pplot(m.gen.p, ax=ax[2], fig=fig, index=index_jours,
-        #       bbox_to_anchor=(0, -0.2, 1, 0.2), ylabel='Diesel power (W)')
-
-
-        # --- Adapter la taille de police des titres et des ticks ---
-        for axis in ax:
-            axis.set_xlabel(axis.get_xlabel(), fontsize=17)
-            axis.set_ylabel(axis.get_ylabel(), fontsize=17)
-            axis.tick_params(axis='both', labelsize=15)
-
-        # --- Création du dossier s'il n'existe pas ---
-        os.makedirs('results_image', exist_ok=True)
-
-        # --- Définir le nom du fichier ---
-        if with_diesel_generator == 0:
-            diesel_power = 0
-        else:
-            diesel_power = p0_list[i]
-
-        filename = f"results_image/temporal_data_diesel_{diesel_power}W.pickle"
-
-        # --- Sauvegarder la figure ---
-        with open(filename, 'wb') as f:
-            pickle.dump(fig, f)
-        plt.show()
-
-    # fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(8, 10), sharex=True)
-    #
-    # # 1. Coût total
-    # axs[0].plot(p0_list, total_cost, marker='o')
-    # axs[0].set_ylabel("Coût total (€)")
-    #
-    # # 2. Puissance PV installée
-    # axs[1].plot(p0_list, pv_wp, marker='o')
-    # axs[1].set_ylabel("Puissance PV (W)")
-    #
-    # # 3. Capacité batterie installée
-    # axs[2].plot(p0_list, bat_capa, marker='o')
-    # axs[2].set_ylabel("Capacité batterie (Wh)")
-    # axs[2].set_xlabel(r'$P_{\mathrm{gen,max}}$ [W]')
-    #
-    # # Améliorations visuelles
-    # for ax in axs:
-    #     ax.grid(True)
-    #
-    # plt.tight_layout()
-    # plt.show()

@@ -9,6 +9,8 @@ from pyomo.environ import *
 from lms2.core.horizon import SimpleHorizon
 from lms2.tools.data_processing import read_data, load_data
 from lms2.electric.sources import fixed_power_load
+from functions_economic import *
+from functions_constraint import *
 
 from block_pv import block_pv
 from battery_factory import make_battery
@@ -22,7 +24,7 @@ import matplotlib.pyplot as plt
 
 UB = 1e10
 
-def _read_load_as_W(csv_path, value_candidates=("aggregate_wh","consumption_wh","value","load_wh")):
+def read_load_as_W(csv_path, value_candidates=("aggregate_wh","consumption_wh","value","load_wh")):
     """
     Lit un CSV à pas 15 min, cherche une colonne Wh, la convertit en W (Wh/0.25h = x4).
     Retourne la liste de puissances W.
@@ -38,11 +40,11 @@ def _read_load_as_W(csv_path, value_candidates=("aggregate_wh","consumption_wh",
         valcol = df.columns[1]
     return (df[valcol].values * 4.0).tolist()
 
-def _time_index_from_horizon(horizon, time_set):
+def time_index_from_horizon(horizon, time_set):
     # Index exactement comme load_data l’attend
     return pd.DatetimeIndex([horizon.map[i] for i in time_set])
 
-def _series_from_component(comp, attr_name, time_set, index):
+def series_from_component(comp, attr_name, time_set, index):
     """Retourne une Series pandas (index=index) depuis comp.<attr_name>[t] si dispo, sinon None."""
     if not hasattr(comp, attr_name):
         return None
@@ -67,6 +69,35 @@ def _negative_part_abs(s):
 def _ensure_dir(path):
     Path(path).mkdir(parents=True, exist_ok=True)
 
+def multiply_by(csv_path, factor):
+    """
+    Lit un fichier CSV contenant une colonne 'aggregate_wh',
+    multiplie cette colonne par 'factor',
+    écrit un nouveau fichier CSV modifié,
+    et retourne le chemin de ce nouveau fichier.
+    """
+    # Lecture du CSV
+    df = pd.read_csv(csv_path)
+
+    # Vérification colonne
+    if "aggregate_wh" not in df.columns:
+        raise ValueError(f"La colonne 'aggregate_wh' est absente dans : {csv_path}")
+
+    # Multiplication
+    df["aggregate_wh"] = df["aggregate_wh"] * factor
+
+    # Chemin vers le nouveau fichier
+    dir_name, base_name = os.path.split(csv_path)
+    name_no_ext, ext = os.path.splitext(base_name)
+
+    new_name = f"{name_no_ext}_x{factor}{ext}"
+    new_path = os.path.join(dir_name, new_name)
+
+    # Sauvegarde
+    df.to_csv(new_path, index=False)
+
+    return new_path
+
 if __name__ == "__main__":
 
     # -----------------------------
@@ -74,10 +105,10 @@ if __name__ == "__main__":
     # -----------------------------
     scenario_load_files = [
         "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
-        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
-        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
-        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
-        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+        "microgrid_consumption/scenarios_24_days/24_days_example_2.csv",
+        multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_3.csv", 1.5),
+        "microgrid_consumption/scenarios_24_days/24_days_example_4.csv",
+        multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_5.csv", 1.5),
     ]
     S = list(range(1, 6))
     prob = {s: 0.2 for s in S}
@@ -88,12 +119,7 @@ if __name__ == "__main__":
     # -----------------------------
     # Horizon 24 jours (15 minutes)
     # -----------------------------
-    horizon = SimpleHorizon(
-        tstart="2023-01-01 00:00:00",
-        tend="2023-01-24 23:45:00",
-        time_step="15 minutes",
-        tz="Indian/Antananarivo"
-    )
+    horizon = SimpleHorizon(tstart="2023-01-01 00:00:00", tend="2023-01-24 23:45:00", time_step="15 minutes", tz="Indian/Antananarivo")
 
     step_s = int(horizon.time_step.total_seconds())
     T = int(horizon.horizon.total_seconds())  # (24 jours - 15 min) en secondes
@@ -105,20 +131,8 @@ if __name__ == "__main__":
     # -----------------------------
     # Options techno
     # -----------------------------
-    option_pv = {
-        "time": m.time,
-        "p_wp_min": 1, "p_wp_max": 6e6,
-        "cost_inv": 1.5, "cost_opex": 0.02,
-    }
-    option_bat = {
-        "time": m.time,
-        "dt": step_s,
-        "c_bat_max": 3e6, "c_bat_min": 1,
-        "eta_c": 0.90, "eta_d": 0.85,
-        "soc_min": 30, "soc_max": 100, "soc0": 100,
-        "cost_inv": 0.12, "cost_opex": 0.0005,
-        # (laisser tes paramètres V3 de vieillissement par défaut, ou les passer ici)
-    }
+    option_pv = {"time": m.time, "p_wp_min": 1, "p_wp_max": 6e6, "cost_inv": 1.5, "cost_opex": 0.02}
+    option_bat = {"time": m.time, "dt": step_s, "c_bat_max": 3e6, "c_bat_min": 1, "eta_c": 0.90, "eta_d": 0.85, "soc_min": 30, "soc_max": 100, "soc0": 100, "cost_inv": 0.12, "cost_opex": 0.0005}
     option_demand = { "time": m.time }  # pour fixed_power_load
 
     # -----------------------------
@@ -130,10 +144,7 @@ if __name__ == "__main__":
     m.demand = Block(m.S)  # <<< RENOMMAGE pour éviter le conflit "load"
 
     for s in m.S:
-        # PV
         block_pv(m.pv[s], curtailable=True, **option_pv)
-
-        # Batterie V3 (vieillissement) – emax0 exposé par battery_factory.make_battery
         make_battery(m.bat[s], model=3, **option_bat)
 
         # Charge fixe
@@ -145,22 +156,23 @@ if __name__ == "__main__":
     s1 = S[0]
 
     @m.Constraint(m.S)
-    def na_pv(_m, s):
+    def same_pv(m, s):
         if s == s1: return Constraint.Skip
-        return _m.pv[s].p_wp == _m.pv[s1].p_wp
+        return m.pv[s].p_wp == m.pv[s1].p_wp
 
     # Investissement batterie commun : emax[t0] identique
-    m.bat_emax0 = Var(bounds=(option_bat["c_bat_min"], option_bat["c_bat_max"]))
+    # m.bat_emax0 = Var(bounds=(option_bat["c_bat_min"], option_bat["c_bat_max"]))
     @m.Constraint(m.S)
-    def na_bat(_m, s):
-        return _m.bat[s].emax[t0] == _m.bat_emax0
+    def same_bat(m, s):
+        if s==s1: return Constraint.Skip
+        return m.bat[s].emax[t0] == m.bat[s1].emax[t0]
 
     # -----------------------------
     # Bilan de puissance (sans diesel)
     # -----------------------------
     @m.Constraint(m.S, m.time)
-    def power_balance(_m, s, t):
-        return _m.bat[s].p[t] + _m.pv[s].p[t] == _m.demand[s].p[t]
+    def power_balance(m, s, t):
+        return m.bat[s].p[t] + m.pv[s].p[t] == m.demand[s].p[t]
 
     # -----------------------------
     # Chargement des données
@@ -177,7 +189,7 @@ if __name__ == "__main__":
             load_data(horizon, m.bat[s].tmp, tmp["Temperature"])
 
         # Charge : convertir Wh/15min -> W (x4)
-        W_vals = _read_load_as_W(scenario_load_files[s - 1])
+        W_vals = read_load_as_W(scenario_load_files[s - 1])
 
         # Ajuster la longueur au nombre de pas (par sécurité)
         expected_pts = len(list(m.time))  # même cardinalité que l'usage de horizon.map[i]
@@ -200,24 +212,23 @@ if __name__ == "__main__":
     PV_YEARS  = 9.64955841794
     BAT_YEARS = 9.64955841794
 
-    def capex_pv(_m):
-        return _m.pv[s1].cost_inv * _m.pv[s1].p_wp
-    def capex_bat(_m):
-        return _m.bat[s1].cost_inv * _m.bat_emax0
-    def opex_pv(_m, s):
-        return _m.pv[s].cost_opex * _m.pv[s1].p_wp * PV_YEARS
-    def opex_bat(_m, s):
-        return _m.bat[s].cost_opex * _m.bat_emax0 * BAT_YEARS
-    def repl_bat(_m):
-        return (_m.bat[s1].cost_inv * _m.bat_emax0 * 0.635227665282
-                + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.403514186739
-                + _m.bat[s1].cost_inv * _m.bat_emax0 * 0.256323374751)
+    m.capex_pv = Expression(rule=lambda b: capex_pv_stoch_rule(b))
+    def capex_bat(m):
+        return m.bat[s1].cost_inv * m.bat[s1].emax[t0]
+    def opex_pv(m, s):
+        return m.pv[s].cost_opex * m.pv[s1].p_wp * PV_YEARS
+    def opex_bat(m, s):
+        return m.bat[s].cost_opex * m.bat[s1].emax[t0] * BAT_YEARS
+    def repl_bat(m):
+        return (m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.635227665282
+                + m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.403514186739
+                + m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.256323374751)
 
     @m.Objective(sense=minimize)
-    def total_cost(_m):
-        invest = capex_pv(_m) + capex_bat(_m)
-        expected_opex = sum(prob[s] * (opex_pv(_m, s) + opex_bat(_m, s)) for s in _m.S)
-        replacement_cost = repl_bat(_m)
+    def total_cost(m):
+        invest = m.capex_pv + capex_bat(m)
+        expected_opex = sum(prob[s] * (opex_pv(m, s) + opex_bat(m, s)) for s in m.S)
+        replacement_cost = repl_bat(m)
         return invest + expected_opex + replacement_cost
 
     # -----------------------------
@@ -228,7 +239,7 @@ if __name__ == "__main__":
 
     print("\n=== SOLUTION (Stoch 24 jours, sans diesel, Batt V3) ===")
     print(f"PV installé (W)        : {value(m.pv[s1].p_wp):,.1f}")
-    print(f"Capacité batt emax0(Wh): {value(m.bat_emax0):,.1f}")
+    print(f"Capacité batt emax0(Wh): {value(m.bat[s1].emax[t0]):,.1f}")
     print(f"Coût total attendu (€) : {value(m.total_cost):,.2f}")
 
     # =========================
@@ -239,7 +250,7 @@ if __name__ == "__main__":
     out_root = "outputs_stochastic"
     _ensure_dir(out_root)
 
-    time_idx = _time_index_from_horizon(horizon, m.time)
+    time_idx = time_index_from_horizon(horizon, m.time)
     dt_s = int(horizon.time_step.total_seconds())
 
     # --- CAPEX/OPEX attendus (on réutilise tes fonctions / variables si elles existent)
@@ -248,12 +259,12 @@ if __name__ == "__main__":
     s1 = list(m.S)[0]
 
     capex_pv_val = value(m.pv[s1].cost_inv) * value(m.pv[s1].p_wp)
-    capex_bat_val = value(m.bat[s1].cost_inv) * value(m.bat_emax0)
+    capex_bat_val = value(m.bat[s1].cost_inv) * value(m.bat[s1].emax[t0])
 
     opex_exp = 0.0
     for s in m.S:
         opex_pv_s = value(m.pv[s].cost_opex) * value(m.pv[s1].p_wp) * PV_YEARS
-        opex_bat_s = value(m.bat[s].cost_opex) * value(m.bat_emax0) * BAT_YEARS
+        opex_bat_s = value(m.bat[s].cost_opex) * value(m.bat[s1].emax[t0]) * BAT_YEARS
         opex_exp += prob[s] * (opex_pv_s + opex_bat_s)
 
     '''
@@ -281,18 +292,18 @@ if __name__ == "__main__":
         _ensure_dir(out_dir_s)
 
         # Séries principales (W)
-        demand_W = _series_from_component(m.demand[s], "p", m.time, time_idx)
-        pv_W = _series_from_component(m.pv[s], "p", m.time, time_idx)  # PV injecté (après éventuelle limitation)
-        bat_W = _series_from_component(m.bat[s], "p", m.time,
+        demand_W = series_from_component(m.demand[s], "p", m.time, time_idx)
+        pv_W = series_from_component(m.pv[s], "p", m.time, time_idx)  # PV injecté (après éventuelle limitation)
+        bat_W = series_from_component(m.bat[s], "p", m.time,
                                        time_idx)  # + discharge vers charge ; - charge de la batterie
 
         # Séries optionnelles (si dispo dans tes blocs)
-        soc_pct = _series_from_component(m.bat[s], "soc", m.time, time_idx)  # %
-        emax_Wh = _series_from_component(m.bat[s], "emax", m.time, time_idx)  # Wh (V3)
+        soc_pct = series_from_component(m.bat[s], "soc", m.time, time_idx)  # %
+        emax_Wh = series_from_component(m.bat[s], "emax", m.time, time_idx)  # Wh (V3)
         # Selon l’implémentation du PV, l’une de ces colonnes peut exister -> curtailment = p_th - p (si dispo)
-        p_pot = (_series_from_component(m.pv[s], "p_pot", m.time, time_idx)
-                 or _series_from_component(m.pv[s], "p_theoretical", m.time, time_idx)
-                 or _series_from_component(m.pv[s], "p_raw", m.time, time_idx)
+        p_pot = (series_from_component(m.pv[s], "p_pot", m.time, time_idx)
+                 or series_from_component(m.pv[s], "p_theoretical", m.time, time_idx)
+                 or series_from_component(m.pv[s], "p_raw", m.time, time_idx)
                  or None)
         if p_pot is not None and pv_W is not None:
             curtail_W = (p_pot - pv_W).clip(lower=0.0)
