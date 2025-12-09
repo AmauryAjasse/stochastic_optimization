@@ -3,13 +3,14 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
+from tabulate import tabulate
 
 # ==========
 # Paramètres
 # ==========
 
 # Nom du dossier contenant les scénarios (à adapter si besoin)
-SCENARIOS_DIR_NAME = "scenarios_one_year"
+SCENARIOS_DIR_NAME = "scenarios_24_days"
 
 # Dossier racine du projet : ici on suppose que ce script est dans "microgrid_consumption"
 BASE_DIR = Path(__file__).resolve().parent
@@ -82,34 +83,12 @@ def summarize_durations_and_timesteps(show_plot=True):
         timestep_min = timestep_mean.total_seconds() / 60 if pd.notna(timestep_mean) else float("nan")
         results.append((name, duration_days, timestep_min))
 
-    print("=== Durée totale et pas de temps moyen par scénario ===")
-    for name, duration_days, timestep_min in results:
-        print(f"- {name}:")
-        print(f"    Durée totale ≈ {duration_days:.2f} jours")
-        print(f"    Pas de temps moyen ≈ {timestep_min:.2f} minutes")
+    # ===== Tableau tabulate =====
+    print("\n=== Durée totale et pas de temps moyen par scénario ===\n")
+    headers = ["Scénario", "Durée (jours)", "Δt moyen (min)"]
 
-    if show_plot:
-        scenario_names = [r[0] for r in results]
-        duration_days_list = [r[1] for r in results]
-        timestep_min_list = [r[2] for r in results]
-
-        # Durée en jours
-        plt.figure()
-        plt.bar(scenario_names, duration_days_list)
-        plt.ylabel("Durée totale (jours)")
-        plt.title("Durée totale par scénario")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-
-        # Pas de temps moyen en minutes
-        plt.figure()
-        plt.bar(scenario_names, timestep_min_list)
-        plt.ylabel("Pas de temps moyen (minutes)")
-        plt.title("Pas de temps moyen par scénario")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-
-        plt.show()
+    print(tabulate(results, headers=headers, floatfmt=".2f", tablefmt="psql"))
+    print("\n")
 
 
 # ==================================================
@@ -146,10 +125,10 @@ def summarize_average_energy(show_plot=True):
 
         results.append((name, total_kWh, duration_days, avg_energy_kWh_per_day))
 
-        print(f"- {name}:")
-        print(f"    Énergie totale ≈ {total_kWh:.2f} kWh")
-        print(f"    Durée ≈ {duration_days:.2f} jours")
-        print(f"    Énergie moyenne ≈ {avg_energy_kWh_per_day:.2f} kWh/jour")
+    # ----- Tableau tabulate -----
+    headers = ["Scénario", "Total (kWh)", "Durée (jours)", "Énergie moyenne (kWh/jour)"]
+
+    print(tabulate(results, headers=headers, floatfmt=".2f", tablefmt="psql"))
 
     if show_plot:
         scenario_names = [r[0] for r in results]
@@ -239,6 +218,7 @@ def summarize_energy_by_time_windows(show_plot=True):
         plt.tight_layout()
         plt.show()
 
+
 # ===============================================================
 # 4) passage de courbe sur une année à courbe sur 24 jours
 # ===============================================================
@@ -300,8 +280,8 @@ def extract_first_and_15th_days(input_csv: str, output_csv: str, time_col: str =
 # =====================
 
 if __name__ == "__main__":
-    summarize_durations_and_timesteps(show_plot=False)
-    # summarize_average_energy(show_plot=False)
+    # summarize_durations_and_timesteps()
+    summarize_average_energy(show_plot=False)
     # summarize_energy_by_time_windows(show_plot=False)
 
     # extract_first_and_15th_days(

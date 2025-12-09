@@ -2,7 +2,6 @@
 # - 5 scénarios de charge (24 jours, pas 15 min) à 20% chacun
 # - Sans diesel
 # - Batterie V3 (vieillissement) avec non-anticipation sur emax0
-# - Conflit "load" corrigé -> block renommé en "demand"
 
 from pyomo.environ import *
 
@@ -11,9 +10,12 @@ from lms2.tools.data_processing import read_data, load_data
 from lms2.electric.sources import fixed_power_load
 from functions_economic import *
 from functions_constraint import *
+from functions_useful import *
+from functions_visualisation import *
 
 from block_pv import block_pv
 from battery_factory import make_battery
+from block_diesel_generator import diesel_generator, diesel_generator_V2
 
 import pandas as pd
 import os
@@ -99,291 +101,181 @@ def multiply_by(csv_path, factor):
     return new_path
 
 if __name__ == "__main__":
-
     # -----------------------------
-    # Fichiers d'entrée (24 jours)
+    # Paramètres d'entrée globaux
     # -----------------------------
-    scenario_load_files = [
-        "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
-        "microgrid_consumption/scenarios_24_days/24_days_example_2.csv",
-        multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_3.csv", 1.5),
-        "microgrid_consumption/scenarios_24_days/24_days_example_4.csv",
-        multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_5.csv", 1.5),
-    ]
-    S = list(range(1, 6))
-    prob = {s: 0.2 for s in S}
+    with_diesel_generator = 2                 # 0 : without diesel, 1 : diesel_V1, 2 : diesel_V2 (with SOS2)
+    battery_model = 3                         # 2 : battery_V2, 3 : battery_V3
+    discount_rate = 0.095                     # taux d'actualisation (0.095 pour Madagascar)
+    total_duration = 20                       # durée du micro-réseau en années
+    battery_replacement_years = (5, 10, 15)   # année de remplacement du pack de batterie
+    time_start = "2023-01-01 00:00:00"        # début de l'horizon temporel
+    time_end = "2023-01-24 23:45:00"          # fin de l'horizon temporel
 
-    irr_file = os.path.join("meteo_data", "irradiance_24_days.csv")   # cols: timestamp, Irradiance
-    tmp_file = os.path.join("meteo_data", "temperature_24_days.csv")  # cols: timestamp, Temperature
+    p0_list = [1, 10]                          # puissance maximale de sortie du générateur diesel
+    results_p0 = []
+    total_cost=[]
+    pv_wp=[]
+    bat_capa=[]
 
-    # -----------------------------
-    # Horizon 24 jours (15 minutes)
-    # -----------------------------
-    horizon = SimpleHorizon(tstart="2023-01-01 00:00:00", tend="2023-01-24 23:45:00", time_step="15 minutes", tz="Indian/Antananarivo")
+    for p0 in p0_list:
+        print(f"\n===== Étude pour p0 = {p0} W =====")
+        # -----------------------------
+        # Fichiers d'entrée (24 jours)
+        # -----------------------------
+        scenario_load_files = [
+            "microgrid_consumption/scenarios_24_days/24_days_example_1.csv",
+            "microgrid_consumption/scenarios_24_days/24_days_example_2.csv",
+            "microgrid_consumption/scenarios_24_days/24_days_example_3.csv",
+            # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_3.csv", 1.5),
+            "microgrid_consumption/scenarios_24_days/24_days_example_4.csv",
+            "microgrid_consumption/scenarios_24_days/24_days_example_5.csv"
+            # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_5.csv", 1.5)
+        ]
+        print(f"scenario files :\n" + "\n".join(scenario_load_files))
 
-    step_s = int(horizon.time_step.total_seconds())
-    T = int(horizon.horizon.total_seconds())  # (24 jours - 15 min) en secondes
+        S = list(range(1, 6))
+        prob = {s: 0.2 for s in S}
 
-    m = ConcreteModel()
-    m.time = RangeSet(0, T, step_s)
-    t0 = m.time.first()
+        irr_file = os.path.join("meteo_data", "irradiance_24_days.csv")   # cols: timestamp, Irradiance
+        tmp_file = os.path.join("meteo_data", "temperature_24_days.csv")  # cols: timestamp, Temperature
 
-    # -----------------------------
-    # Options techno
-    # -----------------------------
-    option_pv = {"time": m.time, "p_wp_min": 1, "p_wp_max": 6e6, "cost_inv": 1.5, "cost_opex": 0.02}
-    option_bat = {"time": m.time, "dt": step_s, "c_bat_max": 3e6, "c_bat_min": 1, "eta_c": 0.90, "eta_d": 0.85, "soc_min": 30, "soc_max": 100, "soc0": 100, "cost_inv": 0.12, "cost_opex": 0.0005}
-    option_demand = { "time": m.time }  # pour fixed_power_load
+        # -----------------------------
+        # Horizon 24 jours (15 minutes)
+        # -----------------------------
+        horizon = SimpleHorizon(tstart=time_start, tend=time_end, time_step="15 minutes", tz="Indian/Antananarivo")
 
-    # -----------------------------
-    # Blocs par scénario
-    # -----------------------------
-    m.S = Set(initialize=S)
-    m.pv     = Block(m.S)
-    m.bat    = Block(m.S)
-    m.demand = Block(m.S)  # <<< RENOMMAGE pour éviter le conflit "load"
+        step_s = int(horizon.time_step.total_seconds())
+        T = int(horizon.horizon.total_seconds())  # (24 jours - 15 min) en secondes
 
-    for s in m.S:
-        block_pv(m.pv[s], curtailable=True, **option_pv)
-        make_battery(m.bat[s], model=3, **option_bat)
+        m = ConcreteModel()
+        m.time = RangeSet(0, T, step_s)
+        t0 = m.time.first()
 
-        # Charge fixe
-        fixed_power_load(m.demand[s], **option_demand)
+        # -----------------------------
+        # Options techno
+        # -----------------------------
+        option_pv = {"time": m.time, "p_wp_min": 1, "p_wp_max": 6e6, "cost_inv": 1.5, "cost_opex": 0.02}
+        option_bat = {"time": m.time, "dt": step_s, "c_bat_max": 3e6, "c_bat_min": 1, "eta_c": 0.90, "eta_d": 0.85, "soc_min": 30, "soc_max": 100, "soc0": 100, "cost_inv": 0.12, "cost_opex": 0.0005}
+        option_consumption = {"time": m.time }  # pour fixed_power_load
+        option_gen = {"time": m.time, "dt": step_s, "p0_min": 1, "p0_max": 1e6, "eff": 0.35, "fuel_cost": 1.2, "fuel_consumption": 0.00009639, "cost_inv": 0.7, "cost_opex": 0.03}
+        option_gen_V2 = {'time': m.time, 'dt': horizon.time_step.total_seconds(), 'p0': p0, 'fuel_cost': 1.2, 'fuel_consumption': 0.00009639, 'cost_inv': 0.7, 'cost_opex': 0.03}
 
-    # -----------------------------
-    # Non-anticipation (investissements communs)
-    # -----------------------------
-    s1 = S[0]
+        # -----------------------------
+        # Blocs par scénario
+        # -----------------------------
+        m.S = Set(initialize=S)
+        m.pv     = Block(m.S)
+        m.bat    = Block(m.S)
+        m.consumption = Block(m.S)
+        if with_diesel_generator != 0:
+            m.gen = Block(m.S)
 
-    @m.Constraint(m.S)
-    def same_pv(m, s):
-        if s == s1: return Constraint.Skip
-        return m.pv[s].p_wp == m.pv[s1].p_wp
+        for s in m.S:
+            block_pv(m.pv[s], curtailable=True, **option_pv)
+            make_battery(m.bat[s], model=3, **option_bat)
+            fixed_power_load(m.consumption[s], **option_consumption)
+            if with_diesel_generator == 1:
+                diesel_generator(m.gen[s], **option_gen)
+            elif with_diesel_generator == 2:
+                diesel_generator_V2(m.gen[s], **option_gen_V2)
 
-    # Investissement batterie commun : emax[t0] identique
-    # m.bat_emax0 = Var(bounds=(option_bat["c_bat_min"], option_bat["c_bat_max"]))
-    @m.Constraint(m.S)
-    def same_bat(m, s):
-        if s==s1: return Constraint.Skip
-        return m.bat[s].emax[t0] == m.bat[s1].emax[t0]
+        # -----------------------------
+        # Non-anticipation (investissements communs)
+        # -----------------------------
+        s1 = S[0]
 
-    # -----------------------------
-    # Bilan de puissance (sans diesel)
-    # -----------------------------
-    @m.Constraint(m.S, m.time)
-    def power_balance(m, s, t):
-        return m.bat[s].p[t] + m.pv[s].p[t] == m.demand[s].p[t]
+        m.same_pv = Constraint(m.S, rule=lambda b, s: same_pv_rule(b, s, s_ref=s1))
+        m.same_bat = Constraint(m.S, rule=lambda b, s: same_bat_rule(b, s, s_ref=s1, t0=t0))
+        if with_diesel_generator == 1:
+            m.same_gen = Constraint(m.S, rule=lambda b, s: same_gen_rule(b, s, s_ref=s1))
 
-    # -----------------------------
-    # Chargement des données
-    # -----------------------------
-    irr = read_data(horizon, irr_file, usecols=["Time", "Irradiance"], tz_data="Indian/Antananarivo")
-    tmp = read_data(horizon, tmp_file, usecols=["Time", "Temperature"], tz_data="Indian/Antananarivo")
+        # -----------------------------
+        # Bilan de puissance (sans diesel)
+        # -----------------------------
 
-    for s in m.S:
-        # PV
-        load_data(horizon, m.pv[s].irr, irr["Irradiance"])
-        load_data(horizon, m.pv[s].tmp, tmp["Temperature"])
-        # Batterie V3 : température pour vieillissement
-        if hasattr(m.bat[s], "tmp"):
-            load_data(horizon, m.bat[s].tmp, tmp["Temperature"])
+        m.bilan_puissance = Constraint(m.S, m.time, rule=lambda b, s, t: bilan_puissance_rule(b, s, t, with_diesel_generator=with_diesel_generator))
 
-        # Charge : convertir Wh/15min -> W (x4)
-        W_vals = read_load_as_W(scenario_load_files[s - 1])
+        # -----------------------------
+        # Chargement des données
+        # -----------------------------
+        irr = read_data(horizon, irr_file, usecols=["Time", "Irradiance"], tz_data="Indian/Antananarivo")
+        tmp = read_data(horizon, tmp_file, usecols=["Time", "Temperature"], tz_data="Indian/Antananarivo")
 
-        # Ajuster la longueur au nombre de pas (par sécurité)
-        expected_pts = len(list(m.time))  # même cardinalité que l'usage de horizon.map[i]
-        if len(W_vals) != expected_pts:
-            if len(W_vals) > expected_pts:
-                W_vals = W_vals[:expected_pts]
-            else:
-                W_vals = W_vals + [W_vals[-1]] * (expected_pts - len(W_vals))
+        for s in m.S:
+            # PV
+            load_data(horizon, m.pv[s].irr, irr["Irradiance"])
+            load_data(horizon, m.pv[s].tmp, tmp["Temperature"])
+            # Batterie V3 : température pour vieillissement
+            if hasattr(m.bat[s], "tmp"):
+                load_data(horizon, m.bat[s].tmp, tmp["Temperature"])
 
-        # >>> CLEF : construire l'index exactement comme load_data l'attend
-        time_keys = pd.DatetimeIndex([horizon.map[i] for i in m.time])  # mêmes clés que load_data
-        W_series = pd.Series(W_vals, index=time_keys)
+            # Charge : convertir Wh/15min -> W (x4)
+            W_vals = read_load_as_W(scenario_load_files[s - 1])
 
-        # Charger dans le Param Pyomo
-        load_data(horizon, m.demand[s].p, W_series)
+            # Ajuster la longueur au nombre de pas (par sécurité)
+            expected_pts = len(list(m.time))  # même cardinalité que l'usage de horizon.map[i]
+            if len(W_vals) != expected_pts:
+                if len(W_vals) > expected_pts:
+                    W_vals = W_vals[:expected_pts]
+                else:
+                    W_vals = W_vals + [W_vals[-1]] * (expected_pts - len(W_vals))
 
-    # -----------------------------
-    # Objectif (CAPEX + espérance OPEX)
-    # -----------------------------
-    PV_YEARS  = 9.64955841794
-    BAT_YEARS = 9.64955841794
+            # >>> CLEF : construire l'index exactement comme load_data l'attend
+            time_keys = pd.DatetimeIndex([horizon.map[i] for i in m.time])  # mêmes clés que load_data
+            W_series = pd.Series(W_vals, index=time_keys)
 
-    m.capex_pv = Expression(rule=lambda b: capex_pv_stoch_rule(b))
-    def capex_bat(m):
-        return m.bat[s1].cost_inv * m.bat[s1].emax[t0]
-    def opex_pv(m, s):
-        return m.pv[s].cost_opex * m.pv[s1].p_wp * PV_YEARS
-    def opex_bat(m, s):
-        return m.bat[s].cost_opex * m.bat[s1].emax[t0] * BAT_YEARS
-    def repl_bat(m):
-        return (m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.635227665282
-                + m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.403514186739
-                + m.bat[s1].cost_inv * m.bat[s1].emax[t0] * 0.256323374751)
+            # Charger dans le Param Pyomo
+            load_data(horizon, m.consumption[s].p, W_series)
 
-    @m.Objective(sense=minimize)
-    def total_cost(m):
-        invest = m.capex_pv + capex_bat(m)
-        expected_opex = sum(prob[s] * (opex_pv(m, s) + opex_bat(m, s)) for s in m.S)
-        replacement_cost = repl_bat(m)
-        return invest + expected_opex + replacement_cost
+        # -----------------------------
+        # Objectif (CAPEX + espérance OPEX)
+        # -----------------------------
 
-    # -----------------------------
-    # Solve
-    # -----------------------------
-    solver = SolverFactory('gurobi', tee=True, solver_io="direct")
-    res = solver.solve(m, options={'MIPGap': 0.1})
+        m.capex_pv = Expression(rule=lambda b: capex_pv_rule(b))
+        m.capex_bat = Expression(rule=lambda b: capex_bat_rule(b))
+        m.opex_pv = Expression(rule=lambda b: opex_pv_rule(b, discount_rate=discount_rate, total_duration=total_duration))
+        m.opex_bat = Expression(rule=lambda b: opex_bat_rule(b, discount_rate=discount_rate, total_duration=total_duration))
+        m.repl_bat = Expression(rule=lambda b: repl_bat_rule(b, discount_rate=discount_rate, replacement_year=battery_replacement_years))
+        if with_diesel_generator != 0 :
+            m.capex_gen = Expression(rule=lambda b: capex_gen_rule(b))
+            m.opex_gen = Expression(rule=lambda b: opex_pv_rule(b, discount_rate=discount_rate, total_duration=total_duration))
+            m.expected_fuel_cost = Expression(rule=lambda b: expected_fuel_cost_rule(b, prob=prob, discount_rate=discount_rate, total_duration=total_duration))
 
-    print("\n=== SOLUTION (Stoch 24 jours, sans diesel, Batt V3) ===")
-    print(f"PV installé (W)        : {value(m.pv[s1].p_wp):,.1f}")
-    print(f"Capacité batt emax0(Wh): {value(m.bat[s1].emax[t0]):,.1f}")
-    print(f"Coût total attendu (€) : {value(m.total_cost):,.2f}")
+        """The objective functions are defined in the cases without and with diesel generator."""
+        m.total_cost = Objective(rule=lambda b: total_cost_rule(b, prob=prob, with_diesel_generator=with_diesel_generator, discount_rate=discount_rate, total_duration=total_duration, replacement_year=battery_replacement_years))
 
-    # =========================
-    #  EXPORTS / BILANS / PLOTS
-    # =========================035555582
+        # -----------------------------
+        # Solve
+        # -----------------------------
+        solver = SolverFactory('gurobi', tee=True, solver_io="direct")
+        res = solver.solve(m, options={'MIPGap': 0.1})
 
-    # Répertoires de sortie
-    out_root = "outputs_stochastic"
-    _ensure_dir(out_root)
+        print(f"\n=== SOLUTION (Stochastic optimization {count_days_inclusive(time_start, time_end)} jours, diesel version {with_diesel_generator}, battery version {battery_model}) ===")
+        print(f"PV installé (W)        : {value(m.pv[s1].p_wp):,.1f}")
+        print(f"Capacité batterie emax0 (Wh): {value(m.bat[s1].emax[t0]):,.1f}")
+        print(f"Coût total attendu (€) : {value(m.total_cost):,.2f}\n")
 
-    time_idx = time_index_from_horizon(horizon, m.time)
-    dt_s = int(horizon.time_step.total_seconds())
+        for s in m.S:
+            pv_curt_Wh = compute_pv_curtailment_wh(m, s, dt_s=step_s)
+            print(f"Scénario {s} : énergie PV écrêtée = {pv_curt_Wh:.1f} Wh")
+        print("\n")
 
-    # --- CAPEX/OPEX attendus (on réutilise tes fonctions / variables si elles existent)
-    PV_YEARS = 9.64955841794
-    BAT_YEARS = 9.64955841794
-    s1 = list(m.S)[0]
+        total_cost.append(value(value(m.total_cost)))
+        pv_wp.append(value(m.pv[s1].p_wp))
+        bat_capa.append(value(m.bat[s1].emax0))
 
-    capex_pv_val = value(m.pv[s1].cost_inv) * value(m.pv[s1].p_wp)
-    capex_bat_val = value(m.bat[s1].cost_inv) * value(m.bat[s1].emax[t0])
+        # =========================
+        #  EXPORTS / BILANS / PLOTS
+        # =========================
 
-    opex_exp = 0.0
-    for s in m.S:
-        opex_pv_s = value(m.pv[s].cost_opex) * value(m.pv[s1].p_wp) * PV_YEARS
-        opex_bat_s = value(m.bat[s].cost_opex) * value(m.bat[s1].emax[t0]) * BAT_YEARS
-        opex_exp += prob[s] * (opex_pv_s + opex_bat_s)
+        # Répertoires de sortie
+        out_root = "outputs_stochastic"
+        ensure_dir(out_root)
 
-    '''
-    ## test
-
-    from main_deterministic_optimization import cout_total
-    m.cost_inv_bat = sum([m.bat[s].cost_inv for s in S])
-    m.obj = Objectif(expr=m.cost_inv_bat, sense=minimize) 
-     '''
-
-    cost_breakdown = {
-        "capex_pv": capex_pv_val,
-        "capex_bat": capex_bat_val,
-        "opex_expected": opex_exp,
-        "total_objective": value(m.total_cost),
-    }
-    with open(os.path.join(out_root, "cost_breakdown.json"), "w", encoding="utf-8") as f:
-        json.dump(cost_breakdown, f, indent=2)
-    print("Saved:", os.path.join(out_root, "cost_breakdown.json"))
-
-    # --- Bilans et exports par scénario
-    rows_summary = []
-    for s in m.S:
-        out_dir_s = os.path.join(out_root, f"scenario_{s}")
-        _ensure_dir(out_dir_s)
-
-        # Séries principales (W)
-        demand_W = series_from_component(m.demand[s], "p", m.time, time_idx)
-        pv_W = series_from_component(m.pv[s], "p", m.time, time_idx)  # PV injecté (après éventuelle limitation)
-        bat_W = series_from_component(m.bat[s], "p", m.time,
-                                       time_idx)  # + discharge vers charge ; - charge de la batterie
-
-        # Séries optionnelles (si dispo dans tes blocs)
-        soc_pct = series_from_component(m.bat[s], "soc", m.time, time_idx)  # %
-        emax_Wh = series_from_component(m.bat[s], "emax", m.time, time_idx)  # Wh (V3)
-        # Selon l’implémentation du PV, l’une de ces colonnes peut exister -> curtailment = p_th - p (si dispo)
-        p_pot = (series_from_component(m.pv[s], "p_pot", m.time, time_idx)
-                 or series_from_component(m.pv[s], "p_theoretical", m.time, time_idx)
-                 or series_from_component(m.pv[s], "p_raw", m.time, time_idx)
-                 or None)
-        if p_pot is not None and pv_W is not None:
-            curtail_W = (p_pot - pv_W).clip(lower=0.0)
-        else:
-            curtail_W = None
-
-        # DataFrame export
-        df = pd.DataFrame({"demand_W": demand_W, "pv_W": pv_W, "bat_W": bat_W})
-        if soc_pct is not None: df["soc_pct"] = soc_pct
-        if emax_Wh is not None: df["emax_Wh"] = emax_Wh
-        if p_pot is not None:   df["pv_potential_W"] = p_pot
-        if curtail_W is not None: df["pv_curtail_W"] = curtail_W
-
-        csv_path = os.path.join(out_dir_s, f"timeseries_s{s}.csv")
-        df.to_csv(csv_path, index_label="timestamp")
-        print("Saved:", csv_path)
-
-        # Bilans énergétiques (kWh) — sur l’horizon
-        demand_kWh = _kwh_from_W_series(demand_W, dt_s)
-        pv_kWh = _kwh_from_W_series(pv_W, dt_s) if pv_W is not None else 0.0
-        bat_dis_kWh = _kwh_from_W_series(_positive_part(bat_W), dt_s) if bat_W is not None else 0.0
-        bat_chg_kWh = _kwh_from_W_series(_negative_part_abs(bat_W), dt_s) if bat_W is not None else 0.0
-        curtail_kWh = _kwh_from_W_series(curtail_W, dt_s) if curtail_W is not None else None
-
-        rows_summary.append({
-            "scenario": s,
-            "probability": prob[s],
-            "demand_kWh": demand_kWh,
-            "pv_to_load_kWh": pv_kWh,
-            "bat_discharge_kWh": bat_dis_kWh,
-            "bat_charge_kWh": bat_chg_kWh,
-            "pv_curtail_kWh": curtail_kWh,
-        })
-
-        # Tracés (3 figures légères)
-        # 1) Puissances principales
-        plt.figure(figsize=(12, 3))
-        if demand_W is not None: plt.plot(demand_W.index, demand_W.values, label="Demand (W)")
-        if pv_W is not None: plt.plot(pv_W.index, pv_W.values, label="PV to load (W)")
-        if bat_W is not None: plt.plot(bat_W.index, bat_W.values, label="Battery p (W)")
-        plt.legend()
-        plt.xlabel("Time")
-        plt.ylabel("W")
-        plt.title(f"Scenario {s} — Powers")
-        plt.tight_layout()
-        plt.savefig(os.path.join(out_dir_s, f"plot_powers_s{s}.png"), dpi=150)
-        plt.close()
-
-        # 2) SOC (%), si dispo
-        if soc_pct is not None:
-            plt.figure(figsize=(12, 2.8))
-            plt.plot(soc_pct.index, soc_pct.values)
-            plt.xlabel("Time")
-            plt.ylabel("%")
-            plt.title(f"Scenario {s} — SOC (%)")
-            plt.tight_layout()
-            plt.savefig(os.path.join(out_dir_s, f"plot_soc_s{s}.png"), dpi=150)
-            plt.close()
-
-        # 3) emax (Wh), si dispo (V3)
-        if emax_Wh is not None:
-            plt.figure(figsize=(12, 2.8))
-            plt.plot(emax_Wh.index, emax_Wh.values)
-            plt.xlabel("Time")
-            plt.ylabel("Wh")
-            plt.title(f"Scenario {s} — Battery emax (Wh)")
-            plt.tight_layout()
-            plt.savefig(os.path.join(out_dir_s, f"plot_emax_s{s}.png"), dpi=150)
-            plt.close()
-
-    # Résumé bilans + espérance
-    df_summary = pd.DataFrame(rows_summary)
-    df_summary["expected_kWh_contrib"] = df_summary["probability"] * df_summary["demand_kWh"]
-    df_summary_path = os.path.join(out_root, "energy_summary_by_scenario.csv")
-    df_summary.to_csv(df_summary_path, index=False)
-    print("Saved:", df_summary_path)
-
-    # Agrégat attendu (ex : demande attendue)
-    expected_demand_kWh = float((df_summary["probability"] * df_summary["demand_kWh"]).sum())
-    expected_pv_kWh = float((df_summary["probability"] * df_summary["pv_to_load_kWh"]).sum())
-    print(f"Expected demand over horizon (kWh): {expected_demand_kWh:.2f}")
-    print(f"Expected PV-to-load over horizon (kWh): {expected_pv_kWh:.2f}")
-
+        # 1) Breakdown coûts (CAPEX / OPEX attendu)
+        cost_breakdown = compute_and_save_cost_breakdown(m, prob=prob, t0=t0, out_root=out_root)
+        # 2) Exports par scénario (timeseries + bilans + plots)
+        rows_summary = export_scenario_timeseries_and_plots(m, horizon=horizon, prob=prob, out_root=out_root, with_diesel_generator=with_diesel_generator)
+        # 3) Résumé multi-scénarios + espérance
+        df_summary = summarize_energy_expectation(rows_summary, out_root=out_root)
