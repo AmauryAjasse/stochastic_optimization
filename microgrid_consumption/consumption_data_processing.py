@@ -67,7 +67,7 @@ def _compute_duration_and_timestep(df):
 # 1) Durée totale & pas de temps moyen/scénario
 # ============================================
 
-def summarize_durations_and_timesteps(show_plot=True):
+def summarize_durations_and_timesteps():
     """
     Affiche la durée totale et le pas de temps moyen pour chaque scénario.
     Optionnellement, produit deux graphiques barres :
@@ -280,9 +280,9 @@ def extract_first_and_15th_days(input_csv: str, output_csv: str, time_col: str =
 # =====================
 
 if __name__ == "__main__":
-    # summarize_durations_and_timesteps()
+    summarize_durations_and_timesteps()
     summarize_average_energy(show_plot=False)
-    # summarize_energy_by_time_windows(show_plot=False)
+    summarize_energy_by_time_windows(show_plot=False)
 
     # extract_first_and_15th_days(
     #     input_csv="scenarios_one_year/one_year_example_1.csv",

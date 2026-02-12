@@ -8,6 +8,7 @@ import json
 from pyomo.environ import *
 from tabulate import tabulate
 from lms2.tools.post_processing import *
+from mpl_toolkits.mplot3d import Axes3D
 import os
 import pickle
 
@@ -22,7 +23,7 @@ def cost_table(m, with_diesel_generator=0):
         "coût d'opération (€)": {
             "solar panel": value(m.opex_pv),
             "batteries": value(m.opex_bat),
-            "diesel generator": 0 if with_diesel_generator==0 else value(m.opex_gen) + value(m.cost_total_fuel),
+            "diesel generator": 0 if with_diesel_generator==0 else value(m.opex_gen) + value(m.expected_fuel_cost),
             "total": value(m.opex_pv) + value(m.opex_bat)
         },
         "coût de remplacement (€)": {
@@ -34,7 +35,7 @@ def cost_table(m, with_diesel_generator=0):
         "coût total (€)": {
             "solar panel": value(m.capex_pv) + value(m.opex_pv),
             "batteries": value(m.capex_bat) + value(m.opex_bat) + value(m.repl_bat),
-            "diesel generator": 0 if with_diesel_generator==0 else value(m.capex_gen) + value(m.opex_gen) + value(m.cost_total_fuel),
+            "diesel generator": 0 if with_diesel_generator==0 else value(m.capex_gen) + value(m.opex_gen) + value(m.expected_fuel_cost),
             "total": value(m.total_cost)
         }
     }
@@ -45,7 +46,7 @@ def cost_table(m, with_diesel_generator=0):
     # Affichage du tableau avec tabulate
     print(tabulate(df_costs, headers='keys', tablefmt='grid'))
     if with_diesel_generator != 0:
-        print("coût du diesel consommé : {}€".format(m.cost_total_fuel()))
+        print("coût du diesel consommé : {}€".format(m.expected_fuel_cost()))
 
 def plot_results_deterministic(m, horizon, with_diesel_generator=0, file_name="test"):
     # Visualisation des résultats
@@ -179,7 +180,7 @@ def compute_and_save_cost_breakdown(m, prob: Dict, t0, out_root: str, filename: 
     return cost_breakdown
 
 
-def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, with_diesel_generator: int = 0) -> List[Dict]:
+def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, results_root: str, pv_installed_W: int, p0_diesel_W: int, with_diesel_generator: int = 0) -> List[Dict]:
     """
     Pour chaque scénario s :
       - construit un DataFrame avec consumption_W, pv_W, bat_W, soc, emax, etc.
@@ -188,6 +189,18 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
       - calcule les bilans énergétiques (kWh)
     Retourne une liste de dicts 'rows_summary' (un par scénario).
     """
+    base = Path(results_root) / ("without_diesel" if with_diesel_generator == 0 else "with_diesel")
+
+    if with_diesel_generator == 0:
+        # results/without_diesel/pv_7000W/
+        out_root = base / f"pv_{pv_installed_W}W"
+    else:
+        # results/with_diesel/p0_2000W/pv_7000W/
+        out_root = base / f"p0_{p0_diesel_W}W" / f"pv_{pv_installed_W}W"
+
+    out_root = str(out_root)
+    ensure_dir(out_root)
+
     ensure_dir(out_root)
 
     time_idx = time_index_from_horizon(horizon, m.time)
@@ -202,6 +215,9 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
         consumption_W = series_from_component(m.consumption[s], "p", m.time, time_idx)
         pv_W = series_from_component(m.pv[s], "p", m.time, time_idx)
         bat_W = series_from_component(m.bat[s], "p", m.time, time_idx)
+        gen_W = None
+        if with_diesel_generator != 0 and hasattr(m, "gen"):
+            gen_W = series_from_component(m.gen[s], "p", m.time, time_idx)
 
         # Séries optionnelles
         soc_pct = series_from_component(m.bat[s], "soc", m.time, time_idx)
@@ -225,6 +241,8 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
             "pv_W":          pv_W,
             "bat_W":         bat_W,
         })
+        if gen_W is not None:
+            df["gen_W"] = gen_W
         if soc_pct is not None:
             df["soc_pct"] = soc_pct
         if emax_Wh is not None:
@@ -234,7 +252,7 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
         if curtail_W is not None:
             df["pv_curtail_W"] = curtail_W
 
-        csv_path = os.path.join(out_dir_s, f"timeseries_s{s}.csv")
+        csv_path = os.path.join(out_dir_s, f"timeseries.csv")
         df.to_csv(csv_path, index_label="timestamp")
         print("Saved:", csv_path)
 
@@ -244,6 +262,7 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
         bat_dis_kWh     = kwh_from_W_series(positive_part(bat_W), dt_s)
         bat_chg_kWh     = kwh_from_W_series(negative_part_abs(bat_W), dt_s)
         curtail_kWh     = kwh_from_W_series(curtail_W, dt_s)
+        gen_kWh = kwh_from_W_series(gen_W, dt_s) if gen_W is not None else 0.0
 
         rows_summary.append({
             "scenario": s,
@@ -253,46 +272,58 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, out_root: str, 
             "bat_discharge_kWh":  bat_dis_kWh,
             "bat_charge_kWh":     bat_chg_kWh,
             "pv_curtail_kWh":     curtail_kWh,
+            "gen_kWh": gen_kWh,
         })
 
         # Tracés (3 figures légères)
         # 1) Puissances principales
-        plt.figure(figsize=(12, 3))
+        fig, ax = plt.subplots(figsize=(12, 3))
         if consumption_W is not None:
-            plt.plot(consumption_W.index, consumption_W.values, label="consumption (W)")
+            ax.plot(consumption_W.index, consumption_W.values, label="consumption (W)")
         if pv_W is not None:
-            plt.plot(pv_W.index, pv_W.values, label="PV to load (W)")
+            ax.plot(pv_W.index, pv_W.values, label="PV to load (W)")
         if bat_W is not None:
-            plt.plot(bat_W.index, bat_W.values, label="Battery p (W)")
-        plt.legend()
-        plt.xlabel("Time")
-        plt.ylabel("W")
-        plt.title(f"Scenario {s} — Powers")
-        plt.tight_layout()
-        plt.savefig(os.path.join(out_dir_s, f"plot_powers_s{s}.png"), dpi=150)
-        plt.close()
+            ax.plot(bat_W.index, bat_W.values, label="Battery p (W)")
+        if gen_W is not None:
+            ax.plot(gen_W.index, gen_W.values, label="Diesel gen (W)")
+        ax.legend()
+        ax.set_xlabel("Time")
+        ax.set_ylabel("W")
+        ax.grid(True)
+        ax.set_title(f"Scenario {s} — Powers")
+        fig.tight_layout()
+        fig_path = os.path.join(out_dir_s, f"plot_powers.pickle")
+        with open(fig_path, "wb") as f:
+            pickle.dump(fig, f)
+        plt.close(fig)
 
         # 2) SOC (%), si dispo
         if soc_pct is not None:
-            plt.figure(figsize=(12, 2.8))
-            plt.plot(soc_pct.index, soc_pct.values)
-            plt.xlabel("Time")
-            plt.ylabel("%")
-            plt.title(f"Scenario {s} — SOC (%)")
-            plt.tight_layout()
-            plt.savefig(os.path.join(out_dir_s, f"plot_soc_s{s}.png"), dpi=150)
-            plt.close()
+            fig, ax = plt.subplots(figsize=(12, 2.8))
+            ax.plot(soc_pct.index, soc_pct.values)
+            ax.set_xlabel("Time")
+            ax.set_ylabel("%")
+            ax.grid(True)
+            ax.set_title(f"Scenario {s} — SOC (%)")
+            fig.tight_layout()
+            fig_path = os.path.join(out_dir_s, f"plot_soc.pickle")
+            with open(fig_path, "wb") as f:
+                pickle.dump(fig, f)
+            plt.close(fig)
 
         # 3) emax (Wh), si dispo (V3)
         if emax_Wh is not None:
-            plt.figure(figsize=(12, 2.8))
-            plt.plot(emax_Wh.index, emax_Wh.values)
-            plt.xlabel("Time")
-            plt.ylabel("Wh")
-            plt.title(f"Scenario {s} — Battery emax (Wh)")
-            plt.tight_layout()
-            plt.savefig(os.path.join(out_dir_s, f"plot_emax_s{s}.png"), dpi=150)
-            plt.close()
+            fig, ax = plt.subplots(figsize=(12, 2.8))
+            ax.plot(emax_Wh.index, emax_Wh.values)
+            ax.set_xlabel("Time")
+            ax.set_ylabel("Wh")
+            ax.grid(True)
+            ax.set_title(f"Scenario {s} — Battery emax (Wh)")
+            fig.tight_layout()
+            fig_path = os.path.join(out_dir_s, f"plot_emax.pickle")
+            with open(fig_path, "wb") as f:
+                pickle.dump(fig, f)
+            plt.close(fig)
 
     return rows_summary
 
@@ -317,3 +348,255 @@ def summarize_energy_expectation(rows_summary: List[Dict], out_root: str, summar
     print(f"Expected PV-to-load over horizon (kWh): {expected_pv_kWh:.2f}")
 
     return df_summary
+
+def visualize(path_name):
+    with open(path_name, "rb") as f:
+        fig = pickle.load(f)
+    fig.show()
+
+def view_sizing_evolution_wih_diesel(p0_list, cost_list, pv_list, bat_list, out_dir):
+    if cost_list is not None:
+        fig, ax = plt.subplots(figsize=(12, 2.8))
+        ax.plot(p0_list, cost_list, "o-")
+        ax.set_xlabel("Diesel max output power (W)")
+        ax.set_ylabel("Cost (€)")
+        ax.grid(True)
+        ax.set_title(f"Scenario — Total cost (€)")
+        fig.tight_layout()
+        fig_path = os.path.join(out_dir, f"plot_total_cost.pickle")
+        with open(fig_path, "wb") as f:
+            pickle.dump(fig, f)
+        plt.close(fig)
+
+    if pv_list is not None:
+        fig, ax = plt.subplots(figsize=(12, 2.8))
+        ax.plot(p0_list, pv_list, "o-")
+        ax.set_xlabel("Diesel max output power (W)")
+        ax.set_ylabel("Power (W)")
+        ax.grid(True)
+        ax.set_title(f"Scenario — PV installed power (W)")
+        fig.tight_layout()
+        fig_path = os.path.join(out_dir, f"plot_pv_power.pickle")
+        with open(fig_path, "wb") as f:
+            pickle.dump(fig, f)
+        plt.close(fig)
+
+    if bat_list is not None:
+        fig, ax = plt.subplots(figsize=(12, 2.8))
+        ax.plot(p0_list, bat_list, "o-")
+        ax.set_xlabel("Diesel max output power (W)")
+        ax.set_ylabel("Energy (Wh)")
+        ax.grid(True)
+        ax.set_title(f"Scenario — Battery energy (Wh)")
+        fig.tight_layout()
+        fig_path = os.path.join(out_dir, f"plot_bat_energy.pickle")
+        with open(fig_path, "wb") as f:
+            pickle.dump(fig, f)
+        plt.close(fig)
+
+
+def verify_pv_curt(m, horizon, s, title_prefix=None):
+    """
+    Affiche 2 graphiques pour vérifier la logique d'écrêtage PV :
+      1) pv_curt (W) + soc_bat (%)
+      2) is_full (0/1) + soc_bat (%)
+
+    Paramètres
+    ----------
+    m : Pyomo ConcreteModel résolu
+    horizon : SimpleHorizon
+    s : scénario (élément de m.S)
+    title_prefix : str optionnel
+    """
+
+    # --- index temporel pandas
+    time_idx = pd.DatetimeIndex([horizon.map[t] for t in m.time])
+
+    # --- SOC batterie (%)
+    soc = series_from_component(m.bat[s], "soc", m.time, time_idx)
+    if soc is None:
+        raise ValueError("SOC batterie introuvable : m.bat[s].soc n'existe pas")
+
+    if title_prefix is None:
+        title_prefix = f"Scenario {s}"
+
+    # =========================
+    #  FIG 1 : pv_curt + soc
+    # =========================
+    pv_curt = None
+    if hasattr(m.pv[s], "p_curt"):
+        pv_curt = series_from_component(m.pv[s], "p_curt", m.time, time_idx)
+
+    fig1, ax1 = plt.subplots(figsize=(14, 4))
+    ax1.plot(soc.index, soc.values, label="SOC battery (%)")
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("SOC (%)")
+    ax1.grid(True)
+
+    if pv_curt is not None:
+        ax1b = ax1.twinx()
+        ax1b.plot(pv_curt.index, pv_curt.values, label="PV curtailment (W)")
+        ax1b.set_ylabel("PV curtailment (W)")
+
+        # légende combinée
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax1b.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    else:
+        ax1.legend(loc="upper left")
+
+    ax1.set_title(f"{title_prefix} — pv_curt & SOC")
+    fig1.tight_layout()
+    plt.show()
+
+    # =========================
+    #  FIG 2 : is_full + soc
+    # =========================
+    is_full = None
+    if hasattr(m, "is_full"):
+        is_full = pd.Series(
+            [int(round(value(m.is_full[s, t]))) for t in m.time],
+            index=time_idx
+        )
+
+    fig2, ax2 = plt.subplots(figsize=(14, 4))
+    ax2.plot(soc.index, soc.values, label="SOC battery (%)")
+    ax2.set_xlabel("Time")
+    ax2.set_ylabel("SOC (%)")
+    ax2.grid(True)
+
+    if is_full is not None:
+        ax2b = ax2.twinx()
+        ax2b.step(is_full.index, is_full.values, where="post", label="is_full (0/1)", linewidth=2)
+        ax2b.set_ylabel("is_full")
+        ax2b.set_yticks([0, 1])
+
+        # légende combinée
+        lines1, labels1 = ax2.get_legend_handles_labels()
+        lines2, labels2 = ax2b.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc="upper left")
+    else:
+        ax2.legend(loc="upper left")
+
+    ax2.set_title(f"{title_prefix} — is_full & SOC")
+    fig2.tight_layout()
+    plt.show()
+
+    return fig1, fig2
+
+
+def plot_lcc_and_battery_vs_pv(pv_list, lcc_list, bat_list, out_dir="results_image"):
+    import os
+    import matplotlib.pyplot as plt
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    # --- LCC vs PV
+    plt.figure()
+    plt.plot(pv_list, lcc_list, marker='o')
+    plt.xlabel("PV installé (W)")
+    plt.ylabel("LCC / Coût total attendu (€)")
+    plt.title("LCC en fonction de la puissance PV fixée")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "LCC_vs_PV.png"), dpi=200)
+    plt.show()
+
+    # --- Capacité batterie vs PV
+    plt.figure()
+    plt.plot(pv_list, bat_list, marker='o')
+    plt.xlabel("PV installé (W)")
+    plt.ylabel("Capacité batterie (Wh) (emax[t0])")
+    plt.title("Capacité batterie optimale en fonction de la puissance PV fixée")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "BAT_vs_PV.png"), dpi=200)
+    plt.show()
+
+
+def plot_3d_surface_from_grid(
+    x_list,
+    y_list,
+    z_grid,
+    x_label="p_diesel (W)",
+    y_label="PV fixé (W)",
+    z_label="Value",
+    title="3D surface",
+    out_dir="results_image",
+    filename_prefix="surface_3d"
+):
+    """
+    Trace une surface 3D Z = f(X,Y) où :
+      - x_list : liste des p_diesel (taille Nx)
+      - y_list : liste des pv_fixed (taille Ny)
+      - z_grid : array (Nx, Ny) avec Z[i,j] correspondant à (x_list[i], y_list[j])
+                (utiliser np.nan pour les points infeasible)
+    Sauvegarde une figure pickle + png.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    X, Y = np.meshgrid(y_list, x_list)   # attention: X->PV, Y->diesel pour cohérence visuelle
+    Z = np.array(z_grid, dtype=float)
+
+    fig = plt.figure(figsize=(12, 7))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # masque des NaN pour éviter erreurs sur surface
+    Z_masked = np.ma.masked_invalid(Z)
+
+    surf = ax.plot_surface(X, Y, Z_masked)  # pas de couleur imposée
+    ax.set_xlabel(y_label)
+    ax.set_ylabel(x_label)
+    ax.set_zlabel(z_label)
+    ax.set_title(title)
+
+    fig.tight_layout()
+
+    # Sauvegardes
+    pickle_path = os.path.join(out_dir, f"{filename_prefix}.pickle")
+    with open(pickle_path, "wb") as f:
+        pickle.dump(fig, f)
+
+    png_path = os.path.join(out_dir, f"{filename_prefix}.png")
+    fig.savefig(png_path, dpi=200)
+
+    plt.show()
+    return fig
+
+
+def plot_3d_lcc_and_battery(
+    p_diesel_list,
+    pv_fixed_list,
+    lcc_grid,
+    bat_grid,
+    out_dir="results_image",
+    prefix="LCC_BAT_3D"
+):
+    """
+    Produit 2 figures 3D :
+      - LCC(p_diesel, pv_fixed)
+      - Capacité batterie(p_diesel, pv_fixed)
+    """
+    plot_3d_surface_from_grid(
+        x_list=p_diesel_list,
+        y_list=pv_fixed_list,
+        z_grid=lcc_grid,
+        x_label="p_diesel max (W)",
+        y_label="PV fixé (W)",
+        z_label="LCC / coût total attendu (€)",
+        title="LCC en fonction de (p_diesel, PV fixé)",
+        out_dir=out_dir,
+        filename_prefix=f"{prefix}_LCC"
+    )
+
+    plot_3d_surface_from_grid(
+        x_list=p_diesel_list,
+        y_list=pv_fixed_list,
+        z_grid=bat_grid,
+        x_label="p_diesel max (W)",
+        y_label="PV fixé (W)",
+        z_label="Capacité batterie (Wh)",
+        title="Capacité batterie optimale en fonction de (p_diesel, PV fixé)",
+        out_dir=out_dir,
+        filename_prefix=f"{prefix}_BAT"
+    )

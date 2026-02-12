@@ -49,6 +49,8 @@ Les fonctions domestiques/communautaires utilisées proviennent des scripts util
 
 from typing import Dict, Tuple, List, Optional
 import numpy as np
+import os
+import pandas as pd
 
 # Import des générateurs existants (fichiers fournis par l'utilisateur)
 from microgrid_consumption import community_wide_loads_profiles as cl, domestic_loads_profiles as dl
@@ -353,6 +355,91 @@ def extract_first_and_15th_days(input_csv: str, output_csv: str, time_col: str =
 
     return df_selected
 
+def convert_consumption_csv_15min_to_30min(csv_path: str) -> None:
+    """
+    Convertit un fichier de consommation au pas de 15 min (format: timestamp,aggregate_wh)
+    vers un pas de 30 min en sommant l'énergie sur 2 intervalles.
+
+    - Entrée : csv_path (ex: .../24_days_example_1.csv)
+    - Sortie : ne renvoie rien, écrit un nouveau fichier au même endroit :
+        .../24_days_example_1_30min.csv
+
+    Hypothèses :
+      - timestamp est un début d'intervalle (00:00, 00:15, 00:30, ...)
+      - aggregate_wh est une énergie (Wh) sur l'intervalle de 15 minutes
+      - le fichier est séparé par des virgules (comme 24_days_example_1.csv)
+    """
+    # --- lecture
+    df = pd.read_csv(csv_path)
+
+    required = {"timestamp", "aggregate_wh"}
+    if not required.issubset(df.columns):
+        raise ValueError(
+            f"Colonnes attendues {required}, colonnes trouvées: {set(df.columns)} "
+            f"(fichier: {csv_path})"
+        )
+
+    # --- parsing datetime + index
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").set_index("timestamp")
+
+    # --- resampling 30 min: somme des Wh sur chaque tranche de 30 minutes
+    df_30 = df.resample("30min", label="left", closed="left").sum()
+
+    # --- remettre timestamp en colonne (format identique)
+    df_30 = df_30.reset_index()
+    df_30["timestamp"] = df_30["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- chemin de sortie
+    base, ext = os.path.splitext(csv_path)
+    out_path = f"{base}_30min{ext}"
+
+    # --- écriture
+    df_30.to_csv(out_path, index=False)
+
+
+def convert_consumption_csv_15min_to_1h(csv_path: str) -> None:
+    """
+    Convertit un fichier de consommation au pas de 15 min (format: timestamp,aggregate_wh)
+    vers un pas de 1 heure en sommant l'énergie sur 4 intervalles de 15 minutes.
+
+    - Entrée : csv_path (ex: .../24_days_example_1.csv)
+    - Sortie : ne renvoie rien, écrit un nouveau fichier au même endroit :
+        .../24_days_example_1_1h.csv
+
+    Hypothèses :
+      - timestamp est un début d'intervalle (00:00, 00:15, 00:30, ...)
+      - aggregate_wh est une énergie (Wh) sur l'intervalle de 15 minutes
+      - le fichier est séparé par des virgules
+    """
+    # --- lecture
+    df = pd.read_csv(csv_path)
+
+    required = {"timestamp", "aggregate_wh"}
+    if not required.issubset(df.columns):
+        raise ValueError(
+            f"Colonnes attendues {required}, colonnes trouvées: {set(df.columns)} "
+            f"(fichier: {csv_path})"
+        )
+
+    # --- parsing datetime + index
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").set_index("timestamp")
+
+    # --- resampling 1h : somme des Wh sur chaque tranche horaire
+    df_1h = df.resample("1h", label="left", closed="left").sum()
+
+    # --- remettre timestamp en colonne (format identique)
+    df_1h = df_1h.reset_index()
+    df_1h["timestamp"] = df_1h["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    # --- chemin de sortie
+    base, ext = os.path.splitext(csv_path)
+    out_path = f"{base}_1h{ext}"
+
+    # --- écriture
+    df_1h.to_csv(out_path, index=False)
+
 
 # -------------------------------
 #        Example (optional)
@@ -383,8 +470,11 @@ if __name__ == "__main__":
     # agg_qh, details_qh, path = create_microgrid_profile_15min(cfg, filename=_filename, save_components=False, plot=True)
     # print(f"Saved: {path}  |  points={len(agg_qh)}  |  annual Wh={sum(agg_qh):.1f}")
 
-    extract_first_and_15th_days(
-        input_csv="microgrid_consumption_examples/one_year_example_5.csv",
-        output_csv="microgrid_consumption_examples/24_days_example_5.csv",
-        time_col="timestamp",
-        value_col="aggregate_wh")
+    # extract_first_and_15th_days(
+    #     input_csv="microgrid_consumption_examples/one_year_example_5.csv",
+    #     output_csv="microgrid_consumption_examples/24_days_example_5.csv",
+    #     time_col="timestamp",
+    #     value_col="aggregate_wh")
+
+    # convert_consumption_csv_15min_to_30min("scenarios_24_days/24_days_example_5.csv")
+    convert_consumption_csv_15min_to_1h("scenarios_24_days/24_days_example_5.csv")

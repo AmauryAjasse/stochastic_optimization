@@ -29,6 +29,7 @@ def block_pv(b, curtailable=False, **kwargs):
 
     p_wp_max       = kwargs.get('p_wp_max', 1e8)
     p_wp_min       = kwargs.get('p_wp_min', 1)
+    p_wp_fixed = kwargs.get('p_wp_fixed', None)
     time           = kwargs.get('time', RangeSet(0, 1))
 
     cost_inv       = kwargs.pop('cost_inv', 1.5)
@@ -44,9 +45,14 @@ def block_pv(b, curtailable=False, **kwargs):
     b.irr          = Param(time, mutable=True, default=0)
     b.tmp          = Param(time, mutable=True, default=0)
 
-    b.p_wp         = Var(initialize=p_wp_max, within=PositiveReals, bounds=(p_wp_min, p_wp_max))
+    if p_wp_fixed is None:
+        b.p_wp = Var(initialize=p_wp_max, within=PositiveReals, bounds=(p_wp_min, p_wp_max))
+        p_upper = p_wp_max
+    else:
+        b.p_wp = Param(initialize=p_wp_fixed, within=PositiveReals)
+        p_upper = p_wp_fixed
 
-    b.p            = Var(time, initialize=p_wp_max, within=PositiveReals, bounds=(0, 1e8))
+    b.p            = Var(time, initialize=0, within=NonNegativeReals, bounds=(0, p_upper))
 
     if curtailable:
         b.p_curt       = Var(time, within=NonNegativeReals, bounds=(0, 1e8))

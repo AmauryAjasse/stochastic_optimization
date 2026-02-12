@@ -1,6 +1,6 @@
 {
-  "capex_pv": 11327.62243959004,
-  "capex_bat": 5119.89025640027,
-  "opex_expected": 1663.2735600732963,
-  "total_objective": 24751.68616370967
+  "capex_pv": 13500.0,
+  "capex_bat": 823.0813834521912,
+  "opex_expected": 1770.0137314472865,
+  "total_objective": 21744.74810614569
 }
