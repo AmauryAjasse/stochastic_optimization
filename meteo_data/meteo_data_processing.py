@@ -230,5 +230,81 @@ def sample_meteo_15min_to_1h(
     print(f"✅ Irradiance 1h (strict) créé : {out_irr}")
     print(f"✅ Température 1h (strict) créé : {out_tmp}")
 
-sample_meteo_15min_to_1h("irradiance_24_days.csv",
-                             "temperature_24_days.csv")
+# sample_meteo_15min_to_1h("irradiance_solcast_formatted.csv",
+#                              "temperature_solcast_formatted.csv")
+
+def create_annual_1h_meteo_files(
+    irradiance_csv: str,
+    temperature_csv: str,
+    output_irr_csv: str = "irradiance_2023_1h.csv",
+    output_tmp_csv: str = "temperature_2023_1h.csv",
+    time_col: str = "Time",
+    irr_col: str = "Irradiance",
+    temp_col: str = "Temperature",
+    year: int = 2023,
+):
+    """
+    Crée deux fichiers météo annuels au pas 1h, commençant le 1er janvier à 00:00:00.
+
+    - Garde les valeurs pile à l'heure si elles existent.
+    - Réindexe sur toute l'année.
+    - Remplit les valeurs manquantes au début avec la première valeur disponible.
+    - Remplit les éventuels trous internes par propagation avant/arrière.
+    """
+
+    def _process_one_file(input_csv, output_csv, value_col):
+        df = pd.read_csv(input_csv)
+
+        if time_col not in df.columns or value_col not in df.columns:
+            raise ValueError(
+                f"Colonnes attendues : {time_col}, {value_col}. "
+                f"Colonnes trouvées : {list(df.columns)}"
+            )
+
+        df[time_col] = pd.to_datetime(df[time_col])
+        df = df.sort_values(time_col)
+
+        # Garder seulement les points pile à l'heure
+        df = df[
+            (df[time_col].dt.minute == 0)
+            & (df[time_col].dt.second == 0)
+        ][[time_col, value_col]].copy()
+
+        # Index annuel complet
+        annual_index = pd.date_range(
+            start=f"{year}-01-01 00:00:00",
+            end=f"{year}-12-31 23:00:00",
+            freq="1h"
+        )
+
+        df = df.set_index(time_col)
+        df = df.reindex(annual_index)
+
+        # Remplissage :
+        # - bfill remplit le début avec la première valeur disponible
+        # - ffill remplit les éventuels trous suivants
+        df[value_col] = df[value_col].bfill().ffill()
+
+        df = df.reset_index().rename(columns={"index": time_col})
+        df[time_col] = df[time_col].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_csv, index=False)
+
+        print(f"✅ Fichier créé : {output_csv}")
+        print(f"   {len(df)} points, de {df[time_col].iloc[0]} à {df[time_col].iloc[-1]}")
+        print(f"   Première valeur {value_col} = {df[value_col].iloc[0]}")
+
+        return df
+
+    df_irr = _process_one_file(irradiance_csv, output_irr_csv, irr_col)
+    df_tmp = _process_one_file(temperature_csv, output_tmp_csv, temp_col)
+
+    return df_irr, df_tmp
+
+create_annual_1h_meteo_files(
+    irradiance_csv="irradiance_solcast_formatted.csv",
+    temperature_csv="temperature_solcast_formatted.csv",
+    output_irr_csv="irradiance_2023_1h.csv",
+    output_tmp_csv="temperature_2023_1h.csv"
+)

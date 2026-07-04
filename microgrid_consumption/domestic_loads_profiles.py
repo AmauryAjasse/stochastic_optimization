@@ -5,24 +5,23 @@ from math import sqrt, pi
 from datetime import date, time, datetime, timedelta
 import matplotlib.dates as mdates
 
-"""Voici les profils de conso d'origine qui viennent des articles de la littérature scientifique avec des données en W."""
+"""Voici les profils de conso d'origine qui viennent des articles de la littérature scientifique."""
 azimoh = [5000, 5000, 5000, 5000, 5000, 5000, 45000, 37000, 40000, 41000, 39000, 44000, 53000, 52000, 57000, 52000, 56000, 35000, 26000, 27000, 47000, 38000, 5000, 5000] # W for 300 consumers
 blodgett_entesopia = [76, 67, 39, 19, 19, 25, 73, 104, 163, 180, 303, 379, 410, 379, 284, 362, 368, 679, 752, 617, 413, 239, 152, 95] # W for 19 consumers
 blodgett_barsaloi = [12, 9, 6, 2, 10, 29, 30, 53, 64, 77, 76, 67, 58, 43, 39, 39, 37, 103, 350, 414, 356, 199, 91, 33] # W for 23 customers
 williams = [2.9, 1.9, 1.8, 1.7, 1.7, 1.9, 2.7, 2.1, 2.1, 2.1, 2, 1.9, 2, 2.3, 2.4, 2.8, 2.6, 2.5, 2.4, 9.2, 19.2, 21.8, 15.2, 6.5] # percent of total consumption of 90 Wh/day for 1 consumer
 otieno = [2.8, 2, 1.7, 1.4, 1.3, 1.3, 1.7, 1.4, 1.9, 2.5, 6.4, 4, 4.7, 4.6, 4.2, 4.2, 5, 4.6, 4.6, 8.3, 12, 12.1, 9, 5.6] # W for one consumer
 okundamiya = [3, 2.6, 2.6, 2.5, 8.4, 12.8, 14.1, 12.7, 10.7, 11, 12.6, 13.7, 17.7, 13.3, 10.8, 10.2, 10.4, 16.8, 31.3, 25.7, 17.3, 12.3, 7.7, 2.6] # W for 15 consumers
-odou = [23.68, 14.68, 14.68, 14.26, 14.26, 17.11, 21.17, 3.6, 2.45, 2.18, 2.14, 1.76, 2.18, 2.18, 2.18, 3.6, 3.18, 4.21, 13.21, 38.84, 47.8, 47.3, 45.88, 30.33] # kW for 50 consumers
+odou = [23, 14.1, 14.1, 14.1, 14.1, 16.7, 20.5, 2.9, 2.3, 2, 2.1, 1.8, 1.8, 2.1, 2.4, 3.7, 3.2, 4, 13.2, 39.6, 47.1, 46.7, 46, 30] # kW for 50 consumers
 
-"""On prend les profils d'origine et on les mets à chaque fois pour un seul consommateur en gardant les données en W 
-(ou Wh car un point de donnée par heure)."""
-azimoh_ok = [i / 300 for i in azimoh]  # passage de 300 à 1 consommateur
-blodgett_entesopia_ok = [i / 19 for i in blodgett_entesopia] # passage de 19 à 1 consommateur
-blodgett_barsaloi_ok = [i / 23 for i in blodgett_barsaloi] # passage de 23 à 1 consommateur
-williams_ok = [i * (90/113.7) for i in williams] # 90 car 90Wh par jour et 113.7 car c'est la somme du pourcentage total de la liste d'origine (pas de changement du nombre de consommateur)
-otieno_ok = otieno # RAS
-okundamiya_ok = [i / 15 for i in okundamiya] # passage de 15 à 1 consommateur
-odou_ok = [i * 1000 / 383 for i in odou] # passage de 50 à 1 consommateur
+"""On prend les profils d'origine et on les mets à chaque fois pour un seul consommateur."""
+azimoh_ok = [i / 300 for i in azimoh]
+blodgett_entesopia_ok = [i / 19 for i in blodgett_entesopia]
+blodgett_barsaloi_ok = [i / 23 for i in blodgett_barsaloi]
+williams_ok = [i * (90/113.7) for i in williams] # 90 car 90Wh par jour et 113.7 car c'est la somme du pourcentage total de la liste d'origine
+otieno_ok = otieno
+okundamiya_ok = [i / 15 for i in okundamiya]
+odou_ok = [i / 50 for i in odou]
 
 """On normalise les profils en pourcentage de la consommation totale."""
 azimoh_percent = [i / sum(azimoh_ok) for i in azimoh_ok]
@@ -39,14 +38,16 @@ profiles_dict_ok = {
     "Blodgett Barsaloi": blodgett_barsaloi_ok,
     "Williams": williams_ok,
     "Otieno": otieno_ok,
-    "Okundamiya": okundamiya_ok
+    "Okundamiya": okundamiya_ok,
+    "Odou": odou_ok
 }
 profiles_dict_percent = {
     "Blodgett Entesopia": blodgett_entesopia_percent,
     "Blodgett Barsaloi": blodgett_barsaloi_percent,
     "Williams": williams_percent,
     "Otieno": otieno_percent,
-    "Okundamiya": okundamiya_percent
+    "Okundamiya": okundamiya_percent,
+    "Odou": odou_percent
 }
 
 def plot_profiles(profiles_dict, normalized=True):
@@ -93,10 +94,10 @@ def plot_hourly_boxplots(profiles_dict_percent: dict, percent: bool = True, show
     arr = np.vstack([vals for vals in profiles_dict_percent.values()])  # shape: (6, 24)
     if percent:
         arr_plot = arr * 100.0
-        ylabel = "Part de la conso journalière (%)"
+        ylabel = "Part de la consommation journalière (%)"
     else:
         arr_plot = arr
-        ylabel = "Part de la conso journalière (fraction)"
+        ylabel = "Part de la consommation journalière (fraction)"
 
     # Préparer les échantillons par heure pour boxplot: liste de 24 tableaux (chaque tableau: 6 valeurs)
     hourly_samples = [arr_plot[:, h] for h in range(arr_plot.shape[1])]
@@ -130,13 +131,16 @@ def plot_hourly_boxplots(profiles_dict_percent: dict, percent: bool = True, show
     if overlay_mean:
         mean_hour = arr_plot.mean(axis=0)
         ax.plot(np.arange(24), mean_hour, marker="o", linewidth=2, label="Moyenne horaire")
-        ax.legend()
+        ax.legend(fontsize=18)
 
     ax.set_xticks(np.arange(24))
-    ax.set_xlabel("Heure")
-    ax.set_ylabel(ylabel)
-    ax.set_title("Boxplots horaires des parts de consommation (6 profils)")
+    ax.set_xlabel("Heure", fontsize=18)
+    ax.set_ylabel(ylabel, fontsize=18)
+    # ax.set_title("Boxplots horaires des parts de consommation (6 profils)", fontsize=10)
     ax.grid(True, linestyle="--", alpha=0.5)
+    # Taille de la police des graduations
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
     plt.tight_layout()
     plt.show()
 
@@ -289,36 +293,6 @@ def plot_hour_with_gaussian(profiles_dict_percent: dict, gaussians: dict, hour: 
     plt.tight_layout()
     plt.show()
 
-def _fit_daily_energy_gaussian_from_profiles_dict_ok():
-    """
-    Calcule (mu, sigma) de l'énergie journalière (Wh) en sommant les 24h
-    de chaque profil de profiles_dict_ok (5 profils, Odou exclu).
-    """
-    import numpy as np
-    energies = []
-    for name, arr in profiles_dict_ok.items():  # 5 profils, chacun 24h en W/Wh
-        a = np.asarray(arr, dtype=float)
-        if a.size != 24:
-            raise ValueError(f"Le profil '{name}' n'a pas 24 valeurs.")
-        energies.append(a.sum())  # Wh/j
-    energies = np.asarray(energies, dtype=float)
-    mu = float(energies.mean())
-    sigma = float(energies.std(ddof=1)) if len(energies) > 1 else 0.0
-    return mu, sigma
-
-def _draw_truncated_normal(rng, mu, sigma, min_wh=1.0):
-    """
-    Tire E ~ N(mu, sigma) en rejetant les valeurs < min_wh.
-    Si sigma <= 0, renvoie max(mu, min_wh).
-    """
-    if sigma <= 0:
-        return max(mu, min_wh)
-    for _ in range(1000):
-        e = rng.normal(mu, sigma)
-        if e >= min_wh:
-            return float(e)
-    return max(mu, min_wh)
-
 """On a différentes représentations des gaussiennes."""
 
 """Représentation 1 : pleins de petits sous-graphes qui permettent d'afficher toutes les gaussiennes et de comparer 
@@ -390,45 +364,111 @@ def plot_gaussians_heatmap(gaussians: dict):
     plt.show()
 
 """On crée le profil de charge sur une journée pour un ménage"""
-def sample_profile_from_gaussians(gaussians, seed=None, clip_zero=True, renormalize=True, plot=False):
-    """
-    Tire un profil journalier (24h) :
-      1) échantillonne une 'forme' par heure via N(mu_h, sigma_h) (comme avant),
-      2) NORMALISE la forme (somme = 1),
-      3) tire l'énergie journalière E_day ~ N(mu, sigma) (gaussienne OBTENUE DES 5 PROFILS EN Wh),
-      4) scale la forme par E_day (-> Wh/heure), puis retourne 24 valeurs Wh.
+# def sample_profile_from_gaussians(gaussians, seed=None, clip_zero=True, renormalize=True, plot=False):
+#     """
+#     Tire un profil journalier (24h) en échantillonnant N(mu_h, sigma_h) pour chaque heure,
+#     puis le convertit en énergie réelle par heure (Wh) de sorte que la somme journalière = DAILY_ENERGY_WH.
+#
+#     Args:
+#         gaussians: dict {heure: {"mu": float, "sigma": float}}
+#         seed: graine RNG
+#         clip_zero: coupe à 0 les valeurs négatives
+#         renormalize: conservé pour compatibilité ; le scaling final garantit de toute façon la somme = DAILY_ENERGY_WH
+#         plot: si True, trace l'énergie horaire (Wh)
+#     Returns:
+#         list[float]: 24 valeurs en Wh (somme = DAILY_ENERGY_WH)
+#     """
+#     rng = np.random.default_rng(seed)
+#     x = np.array([rng.normal(gaussians[h]["mu"], gaussians[h]["sigma"]) for h in range(24)], dtype=float)
+#     if clip_zero:
+#         x = np.clip(x, 0, None)
+#
+#     s = x.sum()
+#     if s <= 0:
+#         # fallback: profil uniforme si tout est nul après clipping
+#         energy = np.full(24, DAILY_ENERGY_WH / 24.0)
+#     else:
+#         # Énergie horaire en Wh, somme journalière fixée à DAILY_ENERGY_WH
+#         # (équivalent à renormaliser puis multiplier par DAILY_ENERGY_WH)
+#         energy = (x / s) * DAILY_ENERGY_WH
+#
+#     if plot:
+#         heures = np.arange(24)
+#         plt.figure(figsize=(10, 4))
+#         plt.plot(heures, energy, marker="o")
+#         plt.xticks(heures)
+#         plt.xlabel("Time (h)")
+#         plt.ylabel("Energy consumption (Wh)")
+#         plt.title(f"Load profile — daily consumption = {sum(energy):.1f} Wh")
+#         plt.grid(True, linestyle="--", alpha=0.5)
+#         plt.tight_layout()
+#         plt.show()
+#
+#     return energy.tolist()
 
-    -> La somme journalière est VARIABLE (non plus figée à DAILY_ENERGY_WH).
+def sample_profile_from_gaussians(
+        gaussians,
+        mean_daily_kwh,
+        std_daily_kwh,
+        seed=None,
+        clip_zero=True,
+        renormalize=True,
+        plot=False):
     """
+    Tire un profil journalier 24h, avec une consommation journalière totale aléatoire.
+
+    La forme horaire est tirée à partir des gaussiennes horaires.
+    La somme journalière est tirée dans une loi normale :
+        N(mean_daily_kwh, std_daily_kwh)
+
+    Args:
+        gaussians: dict {heure: {"mu": float, "sigma": float}}
+        mean_daily_kwh: moyenne de consommation journalière par consommateur (kWh/jour)
+        std_daily_kwh: écart-type de consommation journalière par consommateur (kWh/jour)
+        seed: graine RNG
+        clip_zero: coupe à 0 les valeurs négatives horaires
+        renormalize: conservé pour compatibilité
+        plot: si True, trace l'énergie horaire (Wh)
+
+    Returns:
+        list[float]: 24 valeurs en Wh
+    """
+
     rng = np.random.default_rng(seed)
 
-    # (A) Échantillonnage par heure (ta logique comme avant)
-    x = np.array([rng.normal(gaussians[h]["mu"], gaussians[h]["sigma"]) for h in range(24)], dtype=float)
+    # Tirage de la consommation journalière totale
+    daily_energy_kwh = rng.normal(mean_daily_kwh, std_daily_kwh)
+
+    # Sécurité : une consommation ne peut pas être négative
+    daily_energy_kwh = max(daily_energy_kwh, 0)
+
+    # Conversion kWh -> Wh
+    daily_energy_wh = daily_energy_kwh * 1000
+
+    # Tirage de la forme horaire du profil
+    x = np.array([
+        rng.normal(gaussians[h]["mu"], gaussians[h]["sigma"])
+        for h in range(24)
+    ], dtype=float)
+
     if clip_zero:
         x = np.clip(x, 0, None)
 
-    # Normalisation de la "forme" horaire
     s = x.sum()
+
     if s <= 0:
-        # fallback uniforme si tout est nul après clipping
-        x = np.ones(24, dtype=float) / 24.0
+        energy = np.full(24, daily_energy_wh / 24.0)
     else:
-        x = x / s  # somme = 1
-
-    # (B) Tirage de l'énergie journalière à partir des 5 profils (Wh/j)
-    mu, sigma = _fit_daily_energy_gaussian_from_profiles_dict_ok()  # NEW
-    E_day = _draw_truncated_normal(rng, mu, sigma, min_wh=1.0)       # NEW
-
-    # (C) Mise à l'échelle: Wh/heure
-    energy = x * E_day
+        energy = (x / s) * daily_energy_wh
 
     if plot:
         heures = np.arange(24)
         plt.figure(figsize=(10, 4))
         plt.plot(heures, energy, marker="o")
-        plt.xticks(heures)
-        plt.xlabel("Time (h)")
-        plt.ylabel("Energy consumption (Wh)")
+        plt.xticks(np.arange(0, 24, 2), fontsize=16)
+        plt.yticks(fontsize=16)
+        plt.xlabel("Temps (h)", fontsize=16)
+        plt.ylabel("Energie consommée (Wh)", fontsize=16)
         plt.title(f"Load profile — daily consumption = {sum(energy):.1f} Wh")
         plt.grid(True, linestyle="--", alpha=0.5)
         plt.tight_layout()
@@ -437,7 +477,7 @@ def sample_profile_from_gaussians(gaussians, seed=None, clip_zero=True, renormal
     return energy.tolist()
 
 """On crée le profil de charge sur une année pour un ménage"""
-def sample_annual_profile_from_gaussians(gaussians, seed=None, clip_zero=True, renormalize=True, plot=False):
+def sample_annual_profile_from_gaussians(gaussians, mean_daily_kwh= 0.154, std_daily_kwh=0.162, seed=None, clip_zero=True, renormalize=True, plot=False):
     """
     Construit un profil domestique annuel (365 jours) en concaténant 365 profils
     tirés via sample_profile_from_gaussians(...). L'affichage (plot=True) met l'axe des x en DATES.
@@ -458,6 +498,8 @@ def sample_annual_profile_from_gaussians(gaussians, seed=None, clip_zero=True, r
             daily = sample_profile_from_gaussians(
                 gaussians,
                 seed=None,
+                mean_daily_kwh=mean_daily_kwh,
+                std_daily_kwh=std_daily_kwh,
                 clip_zero=clip_zero,
                 renormalize=renormalize,
                 plot=False
@@ -476,25 +518,88 @@ def sample_annual_profile_from_gaussians(gaussians, seed=None, clip_zero=True, r
             )
             annual.extend(daily)
 
+    # if plot:
+    #     # Axe des x en DATES (pas en heures)
+    #     t0 = datetime.combine(START_DATE, time(0, 0))
+    #     ts = [t0 + timedelta(hours=i) for i in range(24 * days)]
+    #
+    #     fig, ax = plt.subplots(figsize=(14, 4))
+    #     ax.plot(ts, annual, linewidth=0.9)
+    #     ax.set_xlabel("Date", fontsize=16)
+    #     ax.set_ylabel("Energie consommée (Wh)", fontsize=16)
+    #     # ax.set_title(f"Domestic annual profile - one consumer")
+    #
+    #     # Ticks lisibles: mois en majeur, semaines en mineur
+    #     ax.xaxis.set_major_locator(mdates.MonthLocator())
+    #     ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    #     ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO, interval=1))
+    #
+    #     fig.autofmt_xdate()
+    #     ax.grid(True, linestyle="--", alpha=0.4)
+    #     plt.tight_layout()
+    #     plt.xticks(fontsize=16)
+    #     plt.yticks(fontsize=16)
+    #     plt.show()
+
     if plot:
         # Axe des x en DATES (pas en heures)
         t0 = datetime.combine(START_DATE, time(0, 0))
         ts = [t0 + timedelta(hours=i) for i in range(24 * days)]
 
+        # =========================
+        # Graphe 1 : année complète
+        # =========================
         fig, ax = plt.subplots(figsize=(14, 4))
         ax.plot(ts, annual, linewidth=0.9)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        avg_daily = sum(annual) / 365.0
-        ax.set_title(f"Domestic annual profile — daily consumption = {avg_daily:.1f} Wh")
 
-        # Ticks lisibles: mois en majeur, semaines en mineur
+        ax.set_xlabel("Date", fontsize=16)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=16)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-        ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO, interval=1))
+        ax.xaxis.set_minor_locator(
+            mdates.WeekdayLocator(byweekday=mdates.MO, interval=1)
+        )
 
         fig.autofmt_xdate()
         ax.grid(True, linestyle="--", alpha=0.4)
+        ax.tick_params(axis="both", labelsize=16)
+
+        plt.tight_layout()
+        plt.show()
+
+        # ================================================
+        # Graphe 2 : zoom du 6 février matin au 12 février soir
+        # ================================================
+        zoom_start = datetime.combine(
+            START_DATE.replace(month=2, day=6),
+            time(0, 0)
+        )
+
+        zoom_end = datetime.combine(
+            START_DATE.replace(month=2, day=12),
+            time(23, 0)
+        )
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+        ax.plot(ts, annual, linewidth=0.9)
+
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=20)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=20)
+
+        # Graduation principale : un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Graduation secondaire : toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        fig.autofmt_xdate()
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.tick_params(axis="both", labelsize=20)
+
         plt.tight_layout()
         plt.show()
 
@@ -570,6 +675,7 @@ def sample_microgrid_annual_profile_from_gaussians(gaussians, seed=None, clip_ze
 # Exécution de l'application
 if __name__ == '__main__':
     """Variables globales"""
+    DAILY_ENERGY_WH = 120.0  # Wh par ménage et par jour
     START_DATE = date(2023, 1, 1)  # date de début de l'année (modifiable globalement)
     N_HOUSEHOLDS = 15  # nombre de ménages dans le micro-réseau
 
@@ -604,10 +710,10 @@ if __name__ == '__main__':
     # plot_gaussians_heatmap(gaussians)
 
     """On créé le profil de charge sur une journée pour un ménage"""
-    # one_day_example = sample_profile_from_gaussians(gaussians, plot=True)
+    # one_day_example = sample_profile_from_gaussians(gaussians, mean_daily_kwh= 0.154, std_daily_kwh=0.162, plot=True)
 
     """On crée le profil de charge sur une année pour un ménage"""
-    # one_year_example = sample_annual_profile_from_gaussians(gaussians, seed=None, clip_zero=True, renormalize=True, plot=True)
+    one_year_example = sample_annual_profile_from_gaussians(gaussians, mean_daily_kwh= 0.154, std_daily_kwh=0.162, seed=None, clip_zero=True, renormalize=True, plot=True)
 
     """On crée le profil de charge sur une année pour tout le micro-réseau"""
     # sample_microgrid_annual_profile_from_gaussians(gaussians, plot=True)

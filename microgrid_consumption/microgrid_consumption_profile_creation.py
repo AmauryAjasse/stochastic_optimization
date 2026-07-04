@@ -51,6 +51,7 @@ from typing import Dict, Tuple, List, Optional
 import numpy as np
 import os
 import pandas as pd
+from pathlib import Path
 
 # Import des générateurs existants (fichiers fournis par l'utilisateur)
 from microgrid_consumption import community_wide_loads_profiles as cl, domestic_loads_profiles as dl
@@ -300,9 +301,6 @@ def create_microgrid_profile_15min(
 
     return agg_qh, details_qh, filepath
 
-import pandas as pd
-from pathlib import Path
-
 def extract_first_and_15th_days(input_csv: str, output_csv: str, time_col: str = "timestamp", value_col: str = "aggregate_wh"):
     """
     Crée un nouveau CSV ne contenant que les jours 1 et 15 de chaque mois,
@@ -448,8 +446,8 @@ if __name__ == "__main__":
     # Exemple d'utilisation : l'utilisateur peut changer filename à la volée.
     cfg = {
         "year": 2023,
-        "households": 15,
-        "community": {"school": 1, "health_center": 1, "church": 1, "water_pump": 1, "mills": 0},
+        "households": 99,
+        "community": {"school": 8, "health_center": 1, "church": 3, "water_pump": 7, "mills": 4},
         "domestic_params": {
             # "seed": 2025,
             # "gaussians": <dict de gaussiennes horaires si tu veux override>
@@ -466,15 +464,15 @@ if __name__ == "__main__":
     }
 
     # Le nom de fichier est à choisir par l'utilisateur :
-    # _filename = "one_year_example_5.csv"
+    _filename = "one_year_s5.csv"
     # agg_qh, details_qh, path = create_microgrid_profile_15min(cfg, filename=_filename, save_components=False, plot=True)
     # print(f"Saved: {path}  |  points={len(agg_qh)}  |  annual Wh={sum(agg_qh):.1f}")
 
     # extract_first_and_15th_days(
-    #     input_csv="microgrid_consumption_examples/one_year_example_5.csv",
-    #     output_csv="microgrid_consumption_examples/24_days_example_5.csv",
+    #     input_csv="microgrid_consumption_examples/one_year_s5.csv",
+    #     output_csv="microgrid_consumption_examples/24_days_s5.csv",
     #     time_col="timestamp",
     #     value_col="aggregate_wh")
 
-    # convert_consumption_csv_15min_to_30min("scenarios_24_days/24_days_example_5.csv")
-    convert_consumption_csv_15min_to_1h("scenarios_24_days/24_days_example_5.csv")
+    convert_consumption_csv_15min_to_30min("microgrid_consumption_examples/24_days_s5.csv")
+    convert_consumption_csv_15min_to_1h("microgrid_consumption_examples/24_days_s5.csv")

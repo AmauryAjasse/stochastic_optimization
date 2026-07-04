@@ -232,6 +232,8 @@ def battery_v3(bat, **options):
     cost_inv    = options.pop('cost_inv', 0.3) # €/Wh
     cost_opex   = options.pop('cost_opex', 0.005) # €/Wh/year
 
+    c_rate_max = options.pop('c_rate_max', 0.25)
+
     # Paramètres de vieillissement (article CARDOSO 2018)
     Q_bar       = options.pop('Q_bar', 0.2)         # perte de capacité max autorisée durant la durée de vie (sans dimension)
     L           = options.pop('L', 10)              # durée de vie ciblée en années
@@ -246,7 +248,7 @@ def battery_v3(bat, **options):
     upsilon     = options.pop('upsilon', 4944)      # coefficient de vieillissement calendaire en months^{-1/2}
     Ea          = options.pop('Ea', 24500)          # énergie d'activation (loi d'Arrhenius) en J/mol
     R           = options.pop('R', 8.314)           # constante universelle des gaz parfaits en J/(mol.K)
-    i_prime     = options.pop('i_prime', 0.2)
+    i_prime     = options.pop('i_prime', 0.15)
 
     if c_bat is None:
         assert c_bat_max is not None, 'User should either set c_bat or (c_bat_min and c_bat_max)'
@@ -294,13 +296,13 @@ def battery_v3(bat, **options):
     @bat.Expression(time, doc='Initialize calendar aging coefficient')
     def calendar_coeff(m, t):
         T_K = m.tmp[t] + 273.15
-        return ((alpha * T_K**2 + beta * T_K + gamma) *
+        return ((alpha * T_K**2 + beta * T_K + gamma) * 182 *
                 exp((delta * T_K + epsilon) * i_prime))
 
     @bat.Expression(time, doc='Initialize cycling aging coefficient')
     def cycling_coeff(m, t):
         T_K = m.tmp[t] + 273.15
-        return (upsilon * exp(-Ea / (R * T_K)) * np.sqrt(i_prime))
+        return (upsilon * 182 * exp(-Ea / (R * T_K)) * np.sqrt(i_prime))
 
 
     def _init_e(m, t):
@@ -328,21 +330,11 @@ def battery_v3(bat, **options):
     def energy_loss(m, t):
         return m.e_loss[t] == m.calendar_coeff[t] * m.pd[t] + m.cycling_coeff[t]
 
-    # @bat.Constraint(time, doc='Loss of energy max stored constraint')
-    # def energy_loss(m, t):
-    #     return m.e_loss[t] == 1e-10 * m.pd[t] + 1e-10
-
     @bat.Constraint(time, doc='Loss of energy max stored constraint')
     def energy_max_stored(m, t):
         if t == time.first():
             return m.emax[t] == m.emax[0]
         return m.emax[t] == m.emax[t - m.dt] - m.calendar_coeff[t] * m.pd[t] - m.cycling_coeff[t]
-
-    # @bat.Constraint(time, doc='Loss of energy max stored constraint')
-    # def energy_max_stored(m, t):
-    #     if t == time.first():
-    #         return m.emax[t] == m.emax[0]
-    #     return m.emax[t] == m.emax[t - m.dt] - 1e-9 * m.pd[t] - 1e-9
 
     @bat.Constraint(time, doc='Minimal energy constraint')
     def _e_min(m, t):
@@ -394,6 +386,14 @@ def battery_v3(bat, **options):
         if m.socmax.value is None:
             return Constraint.Skip
         return m.e[t] <= m.socmax * m.emax[t] / 100
+
+    @bat.Constraint(time, doc='Maximum C-rate charging constraint')
+    def c_rate_charge_constraint(m, t):
+        return m.pc[t] <= c_rate_max * m.emax[t]
+
+    @bat.Constraint(time, doc='Maximum C-rate discharging constraint')
+    def c_rate_discharge_constraint(m, t):
+        return m.pd[t] <= c_rate_max * m.emax[t]
 
     @bat.Constraint(time, doc='Discharging power bound')
     def _pdmax(bat, t):

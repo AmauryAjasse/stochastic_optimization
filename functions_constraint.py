@@ -137,6 +137,15 @@ def soc_final_ge_initial_rule(b, s):
     """
     Impose e_final >= e_initial pour la batterie
     """
-    t0 = b.time.first()
     t_end = b.time.last()
-    return b.bat[s].e[t_end] >= b.bat[s].e[t0]
+    soc0 = value(b.bat[s].soc0)
+    return b.bat[s].e[t_end] >= (soc0 / 100.0) * b.bat[s].emax[t_end]
+
+def satisfaction_rule_per_day_per_scenario(b, s, d, min_served_day, T_of_day):
+    """
+    Pour un scénario s et un jour d :
+    impose au moins min_served_day[d] pas de temps servis sur les pas de temps de ce jour.
+    - min_served_day : Param indexé par b.DAYS (int)
+    - T_of_day       : Set indexé par b.DAYS (liste des t du jour d)
+    """
+    return sum(b.is_served[s, t] for t in T_of_day[d]) >= min_served_day[d]

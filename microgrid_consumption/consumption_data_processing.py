@@ -4,13 +4,15 @@ from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 from tabulate import tabulate
+from typing import Optional, Union
+import numpy as np
 
 # ==========
 # Paramètres
 # ==========
 
 # Nom du dossier contenant les scénarios (à adapter si besoin)
-SCENARIOS_DIR_NAME = "scenarios_24_days"
+SCENARIOS_DIR_NAME = "microgrid_consumption_examples"
 
 # Dossier racine du projet : ici on suppose que ce script est dans "microgrid_consumption"
 BASE_DIR = Path(__file__).resolve().parent
@@ -274,6 +276,119 @@ def extract_first_and_15th_days(input_csv: str, output_csv: str, time_col: str =
 
     return df_selected
 
+def create_synthetic_load_profile_like_24days(
+    ref_csv_path: str,
+    out_csv_path: str,
+    timestep: str = "15min",              # "15min" | "30min" | "1h"
+    mean_daily_energy_wh: float = 20000,  # Wh/jour
+    window_start_h: float = 9.0,          # heure décimale (ex: 9.5 = 09:30)
+    window_end_h: float = 16.0,           # heure décimale
+    window_energy_frac: float = 0.95,     # fraction entre 0 et 1 (95% -> 0.95)
+    start_date: str = "2023-01-01",
+    noise_frac: float = 0.0,              # 0.0 = profil parfaitement plat ; ex: 0.10 = ±10% (bruit)
+    seed: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Génère un profil synthétique (Wh par pas) sur N jours, où N est le même
+    que dans ref_csv_path (ex: 24_days_example_1.csv), et exporte un CSV
+    au format: timestamp,aggregate_wh (même format que 24_days_example_1.csv).
+
+    - mean_daily_energy_wh : énergie moyenne consommée par jour (Wh/jour)
+    - window_energy_frac : part de l'énergie journalière consommée entre window_start_h et window_end_h
+      (ex: 0.95 => 95% de l'énergie entre 9h et 16h)
+    - timestep : "15min", "30min" ou "1h"
+    - window_start_h / window_end_h : heures décimales (ex: 9.0, 16.0, 18.5)
+    - noise_frac : ajoute un léger bruit multiplicatif par pas (optionnel)
+    """
+    # ---------- checks ----------
+    timestep = timestep.lower().strip()
+    allowed = {"15min": 15, "30min": 30, "1h": 60, "60min": 60}
+    if timestep not in allowed:
+        raise ValueError(f"timestep='{timestep}' invalide. Valeurs possibles: '15min', '30min', '1h'.")
+
+    dt_min = allowed[timestep]
+    if mean_daily_energy_wh <= 0:
+        raise ValueError("mean_daily_energy_wh doit être > 0.")
+    if not (0.0 < window_energy_frac < 1.0):
+        raise ValueError("window_energy_frac doit être entre 0 et 1 (ex: 0.95).")
+    if not (0.0 <= window_start_h < 24.0) or not (0.0 <= window_end_h < 24.0):
+        raise ValueError("window_start_h et window_end_h doivent être dans [0, 24).")
+    if window_end_h <= window_start_h:
+        raise ValueError("Pour l’instant, on suppose window_end_h > window_start_h (fenêtre dans la journée).")
+    if noise_frac < 0:
+        raise ValueError("noise_frac doit être >= 0.")
+
+    # ---------- 1) lire le CSV de référence pour récupérer N jours ----------
+    df_ref = pd.read_csv(ref_csv_path)
+    if not {"timestamp", "aggregate_wh"}.issubset(df_ref.columns):
+        raise ValueError(
+            f"Colonnes attendues: timestamp, aggregate_wh. Colonnes trouvées: {set(df_ref.columns)}"
+        )
+
+    df_ref["timestamp"] = pd.to_datetime(df_ref["timestamp"])
+    n_days = df_ref["timestamp"].dt.date.nunique()
+    if n_days <= 0:
+        raise ValueError("Impossible de déterminer le nombre de jours dans le CSV de référence.")
+
+    # ---------- 2) construire l'index temporel sur N jours ----------
+    steps_per_day = int((24 * 60) / dt_min)
+    n_points = n_days * steps_per_day
+    freq_str = "15min" if dt_min == 15 else ("30min" if dt_min == 30 else "1h")
+    index = pd.date_range(start=f"{start_date} 00:00:00", periods=n_points, freq=freq_str)
+
+    # ---------- 3) répartir l'énergie journalière ----------
+    # Fenêtre [start, end) en minutes
+    w_start_min = int(round(window_start_h * 60))
+    w_end_min = int(round(window_end_h * 60))
+    # indices de pas dans une journée
+    start_k = int(np.floor(w_start_min / dt_min))
+    end_k = int(np.floor(w_end_min / dt_min))
+    if end_k <= start_k:
+        raise ValueError("Fenêtre trop petite (end_k <= start_k) avec ce pas de temps. Ajuste les heures ou le timestep.")
+
+    n_in = end_k - start_k
+    n_out = steps_per_day - n_in
+    if n_out <= 0:
+        raise ValueError("La fenêtre couvre toute la journée : mets une fenêtre plus petite.")
+
+    e_in = mean_daily_energy_wh * window_energy_frac
+    e_out = mean_daily_energy_wh * (1.0 - window_energy_frac)
+
+    base_in = e_in / n_in
+    base_out = e_out / n_out
+
+    # Profil journalier "plat" (2 niveaux)
+    day_profile = np.full(steps_per_day, base_out, dtype=float)
+    day_profile[start_k:end_k] = base_in
+
+    # ---------- 4) répéter sur N jours + bruit optionnel ----------
+    profile = np.tile(day_profile, n_days)
+
+    if noise_frac > 0.0:
+        rng = np.random.default_rng(seed)
+        # bruit multiplicatif centré sur 1 : (1 + eps), eps ~ U[-noise_frac, +noise_frac]
+        eps = rng.uniform(-noise_frac, +noise_frac, size=profile.shape[0])
+        profile = profile * (1.0 + eps)
+        profile = np.clip(profile, 0.0, None)
+
+        # renormalisation : conserver EXACTEMENT mean_daily_energy_wh par jour
+        profile_reshaped = profile.reshape((n_days, steps_per_day))
+        sums = profile_reshaped.sum(axis=1)
+        # éviter division par 0
+        scale = np.where(sums > 0, mean_daily_energy_wh / sums, 1.0)
+        profile = (profile_reshaped * scale[:, None]).reshape(-1)
+
+    # ---------- 5) export CSV au même format ----------
+    df_out = pd.DataFrame({
+        "timestamp": index.strftime("%Y-%m-%d %H:%M:%S"),
+        "aggregate_wh": profile
+    })
+
+    Path(os.path.dirname(out_csv_path) or ".").mkdir(parents=True, exist_ok=True)
+    df_out.to_csv(out_csv_path, index=False)
+
+    return df_out
+
 
 # =====================
 # Exemple d'utilisation
@@ -289,3 +404,15 @@ if __name__ == "__main__":
     #     output_csv="scenarios_24_days/24_days_example_1.csv",
     #     time_col="timestamp",
     #     value_col="aggregate_wh")
+
+    # df = create_synthetic_load_profile_like_24days(
+    #     ref_csv_path="scenarios_24_days/24_days_example_1.csv",
+    #     out_csv_path="scenarios_24_days/24_days_manual_example_1h.csv",
+    #     timestep="1h",
+    #     mean_daily_energy_wh=24000,  # 24 kWh/j
+    #     window_start_h=9.0,
+    #     window_end_h=16.0,
+    #     window_energy_frac=0.95,
+    #     noise_frac=0.05,  # optionnel
+    #     seed=123
+    # )

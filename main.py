@@ -56,11 +56,40 @@ def run_one_case(
     T = int(horizon.horizon.total_seconds())  # (24 jours - 15 min) en secondes
 
     S = list(range(1, len(scenario_load_files) + 1))
-    prob = {s: 1 / len(S) for s in S}
+    scenario_probabilities = {s: 1 / len(S) for s in S}
+    # scenario_probabilities = {
+    #     1: 0.10,  # S1 faible
+    #     2: 0.20,  # S2 bas
+    #     3: 0.40,  # S3 référence
+    #     4: 0.20,  # S4 croissance
+    #     5: 0.10  # S5 forte croissance
+    # }
+    if abs(sum(scenario_probabilities.values()) - 1.0) > 1e-9:
+        raise ValueError("La somme des probabilités des scénarios doit être égale à 1.")
 
     m = ConcreteModel()
     m.time = RangeSet(0, T, step_s)
     t0 = m.time.first()
+
+    t_list = list(m.time)
+    day_of_t = {t: horizon.map[t].date() for t in t_list}  # date() = AAAA-MM-JJ
+
+    days = sorted(set(day_of_t.values()))
+    m.DAYS = Set(initialize=days, ordered=True)
+
+    def _init_T_of_day(m, d):
+        return [t for t in t_list if day_of_t[t] == d]
+
+    m.T_of_day = Set(m.DAYS, initialize=_init_T_of_day, ordered=True)
+
+    # min 80% du temps servi par jour
+    daily_satisfaction_pct = 80.0
+
+    def _init_min_served_day(m, d):
+        n = len(list(m.T_of_day[d]))
+        return int(math.ceil((daily_satisfaction_pct / 100.0) * n))
+
+    m.min_served_day = Param(m.DAYS, initialize=_init_min_served_day, within=NonNegativeIntegers)
 
     def _allow_shed_init(m, t):
         dt = horizon.map[t]  # datetime (timezone déjà gérée par horizon)
@@ -72,24 +101,36 @@ def run_one_case(
 
     """ On définit les options des différents blocs qui constituent le micro-réseau."""
     # option_pv = {"time": m.time, "p_wp_min": 1, "p_wp_max": 1e5, "cost_inv": 1.5, "cost_opex": 0.02}
-    option_pv = {"time": m.time, "p_wp_fixed": pv_p_wp_fixed, "cost_inv": 1.5, "cost_opex": 0.02}
-    option_bat = {"time": m.time, "dt": step_s, "c_bat_max": 1e6, "c_bat_min": 1, "eta_c": 0.90,
-                  "eta_d": 0.85, "soc_min": 30, "soc_max": 100, "soc_allow_curt": 80, "soc0": 70, "socf": None,
+    option_pv = {"time": m.time, "p_wp_fixed": pv_p_wp_fixed, "cost_inv": 1.0, "cost_opex": 0.009}
+    option_bat = {"time": m.time, "dt": step_s, "c_bat_max": 1e6, "c_bat_min": 1, "eta_c": 0.93,
+                  "eta_d": 0.92, "soc_min": 30, "soc_max": 100, "soc_allow_curt": 80, "soc0": 70, "socf": None,
                   "cost_inv": 0.12, "cost_opex": 0.0005}
     option_consumption = {"time": m.time}  # pour fixed_power_load
     option_gen = {"time": m.time, "dt": step_s, "eff": 0.35, "fuel_cost": 1.2,
                   "fuel_consumption": 0.00009639, "cost_inv": 0.7, "cost_opex": 0.03}
-    option_gen_V2 = {'time': m.time, 'dt': horizon.time_step.total_seconds(), 'p0': p0, 'fuel_cost': 1.2,
+    option_gen_V2 = {'time': m.time, 'dt': horizon.time_step.total_seconds(), 'p0': p0, 'fuel_cost': 12.0,
                      'fuel_consumption': 0.00009639, 'cost_inv': 0.7, 'cost_opex': 0.03}
 
     # -----------------------------
     # Blocs par scénario
     # -----------------------------
     m.S = Set(initialize=S)
+    m.prob = Param(m.S, initialize=scenario_probabilities, within=NonNegativeReals)
     m.pv = Block(m.S)
     m.bat = Block(m.S)
     m.consumption = Block(m.S)
     m.p_unserved = Var(m.S, m.time, domain=NonNegativeReals)
+
+    VOLL = 5.0  # exemple : 5 €/kWh (à ajuster)
+    dt_h = step_s / 3600.0
+
+    m.unserved_kWh = Expression(m.S, rule=lambda b, s: sum(b.p_unserved[s, t] * dt_h / 1000.0 for t in b.time))
+    # m.cost_unserved = Expression(m.S, rule=lambda b, s: VOLL * b.unserved_kWh[s])
+    # Espérance d'énergie non servie en kWh
+    # m.expected_unserved_kWh = Expression(rule=lambda b: sum(prob[s] * sum(b.p_unserved[s, t] * dt_h / 1000.0 for t in b.time) for s in b.S))
+    # Coût associé
+    # m.cost_unserved = Expression(rule=lambda b: VOLL * b.expected_unserved_kWh)
+
     if with_diesel_generator != 0:
         m.gen = Block(m.S)
 
@@ -150,6 +191,9 @@ def run_one_case(
     # --- SOC final >= SOC initial
     m.soc_final_ge_initial = Constraint(m.S, rule=lambda b, s: soc_final_ge_initial_rule(b, s))
 
+    # on doit satisfaire 80% de l'énergie tous les jours
+    m.daily_satisfaction = Constraint(m.S, m.DAYS, rule=lambda b, s, d: satisfaction_rule_per_day_per_scenario(b, s, d, b.min_served_day, b.T_of_day))
+
     # -----------------------------
     # Chargement des données
     # -----------------------------
@@ -198,19 +242,26 @@ def run_one_case(
         m.capex_gen = Expression(rule=lambda b: capex_gen_rule(b))
         m.opex_gen = Expression(
             rule=lambda b: opex_gen_rule(b, discount_rate=discount_rate, total_duration=total_duration))
-        m.expected_fuel_cost = Expression(
-            rule=lambda b: expected_fuel_cost_rule(b, prob=prob, discount_rate=discount_rate,
-                                                   total_duration=total_duration))
+        m.expected_fuel_cost = Expression(m.S, rule=lambda b, s: expected_fuel_cost_rule(b, s, discount_rate=discount_rate, total_duration=total_duration))
 
-    """The objective functions are defined in the cases without and with diesel generator."""
-    m.total_cost = Objective(
-        rule=lambda b: total_cost_rule(b, prob=prob, with_diesel_generator=with_diesel_generator,
+    m.total_cost = Expression(m.S,
+        rule=lambda b, s: total_cost_rule(b, s, with_diesel_generator=with_diesel_generator,
                                        discount_rate=discount_rate, total_duration=total_duration,
                                        replacement_year=battery_replacement_years))
 
-    # -----------------------------
+    """The objective functions are defined in the cases without and with diesel generator."""
+    # m.obj = Objective(
+    #     rule=lambda b: total_cost_rule(b, prob=prob, with_diesel_generator=with_diesel_generator,
+    #                                    discount_rate=discount_rate, total_duration=total_duration,
+    #                                    replacement_year=battery_replacement_years) + b.cost_unserved)
+    # m.obj = Objective(rule=lambda b: sum(b.total_cost[s] for s in b.S))
+    m.obj = Objective(rule=lambda b: sum(b.prob[s] * b.total_cost[s] for s in b.S))
+    # m.obj = Objective(rule=lambda b: sum(b.total_cost[s] for s in b.S) + b.cost_unserved)
+
+    # --------------------------------------------
     # Solve
-    # -----------------------------
+    # --------------------------------------------
+    # print("soc0:", value(m.bat[s1].soc0), "socf:", value(m.bat[s1].socf))
     t_solve_start = datetime.datetime.now()
     solver = SolverFactory('gurobi', solver_io="direct")
     res = solver.solve(m, options={"MIPGap": MIP_GAP,
@@ -220,9 +271,22 @@ def run_one_case(
     dt_solve = (t_solve_end - t_solve_start).total_seconds()
     print(f"Temps pour solve avec p0={p0}W et p_wp={pv_p_wp_fixed}W : {dt_solve:,.2f} s")
 
-    out_root = os.path.join("outputs_stochastic", f"p0_{p0}_pv_{pv_p_wp_fixed}")
+    # print("\n===== Solution optimale =====")
+    # print(f"Puissance PV retenue : {value(m.pv_p_wp_fixed):.0f} W")
+    # print(f"Capacité batterie    : {value(m.bat[s1].emax[t0]):.0f} Wh")
+    print(f"Coût total           : {value(m.obj):.2f} €")
+    # print("\nChoix PV :")
+    # for k in m.KPV:
+    #     if value(m.y_pv[k]) > 0.5:
+    #         print(f"  indice {k} -> {pv_p_wp_list[k]} W")
+    # if with_diesel_generator == 2:
+    #     print(f"Puissance diesel retenue : {value(m.p0_selected):.0f} W")
+    #     print("\nChoix diesel :")
+    #     for k in m.KGEN:
+    #         if value(m.y_gen[k]) > 0.5:
+    #             print(f"  indice {k} -> {p0_list[k]} W")
 
-    # df_met, sat_exp, unserved_exp, pvcurt_exp = scenario_metrics_df(m, prob=prob, step_s=step_s)
+    out_root = os.path.join("outputs_stochastic", f"p0_{p0}_pv_{pv_p_wp_fixed}")
 
     # =========================
     #  EXPORTS / BILANS / PLOTS
@@ -241,31 +305,46 @@ def run_one_case(
     if with_diesel_generator != 0:
         capex_total += float(value(m.capex_gen))
         opex_total += float(value(m.opex_gen))
-        fuel_cost = float(value(m.expected_fuel_cost))
+        # fuel_cost = float(value(m.expected_fuel_cost[sc]))
 
     # --- métriques par scénario (taux satisfaction + PV écrêté)
-    df_met, sat_exp, unserved_exp, pvcurt_exp = scenario_metrics_df(m, prob=prob, step_s=step_s)
+    # df_met, sat_exp, unserved_exp, pvcurt_exp = scenario_metrics_df(m, step_s=step_s)
+    df_met = scenario_metrics_df(m, step_s=step_s)
+
+    # --- métriques d'énergie de charge à partir des CSV de scénario
+    load_metrics = {}
+    for s in S:  # S = [1..nb_scenarios]
+        total_Wh, pct_9_16 = load_energy_metrics_from_csv(scenario_load_files[s - 1], start_h=9, end_h=16)
+        load_metrics[int(s)] = {"load_total_Wh": total_Wh, "load_pct_9_16": pct_9_16}
 
     # Exports par scénario (timeseries + bilans + plots)
-    rows_summary = export_scenario_timeseries_and_plots(m, horizon=horizon, prob=prob, results_root="results", pv_installed_W=pv_p_wp_fixed, p0_diesel_W=p0, with_diesel_generator=with_diesel_generator)
+    rows_summary = export_scenario_timeseries_and_plots(m, horizon=horizon, results_root="results", pv_installed_W=pv_p_wp_fixed, p0_diesel_W=p0, with_diesel_generator=with_diesel_generator)
+    summary_by_s = {d["scenario"]: d for d in rows_summary}
 
     # Construire une ligne par scénario avec exactement les colonnes voulues
     rows = []
     for _, row in df_met.iterrows():
+        sc = int(row["scenario"])
+        sm = summary_by_s.get(sc, {})
         rows.append({
             "p0": p0,
             "pv_fixed": pv_p_wp_fixed,
-            "total_cost": float(value(m.total_cost)),
+            "total_cost": float(value(m.total_cost[sc])),
             "bat_emax_t0": float(value(m.bat[s1].emax[t0])),
             "pv_wp": float(value(m.pv[s1].p_wp)),
-            "scenario": int(row["scenario"]),  # <- colonne scénario demandée
+            "scenario": sc,  # <- colonne scénario demandée
+            "load_total_Wh": float(load_metrics[sc]["load_total_Wh"]),
+            "load_pct_energy_9_16": float(load_metrics[sc]["load_pct_9_16"]),
             "pv_curt_Wh": float(row["pv_curt_Wh"]),  # <- PV écrêté dans le scénario
             "sat_time_pct": float(row["sat_time_%"]),  # <- taux satisfaction (%) dans le scénario
             "unserved_Wh": float(row["unserved_Wh"]),  # énergie non servie
             "capex_total_EUR": capex_total,
             "opex_total_EUR": opex_total,
             "repl_bat_EUR": repl_bat,
-            "fuel_cost_EUR": fuel_cost,
+            "fuel_cost_EUR": 0.0 if with_diesel_generator == 0 else float(value(m.expected_fuel_cost[sc])),
+            "diesel_efficiency_mean_active": float(sm.get("diesel_efficiency_mean_active", np.nan)),
+            "battery_capacity_final_pct": float(sm.get("battery_capacity_final_pct", np.nan)),
+            "diesel_usage_rate_pct": float(sm.get("diesel_usage_rate_pct", np.nan)),
         })
 
     return {"rows": rows}
@@ -283,55 +362,38 @@ if __name__ == "__main__":
     total_duration = 20                       # durée du micro-réseau en années
     battery_replacement_years = (5, 10, 15)   # année de remplacement du pack de batterie
     time_start = "2023-01-01 00:00:00"        # début de l'horizon temporel
-    time_end = "2023-01-05 23:00:00"          # fin de l'horizon temporel
+    time_end = "2023-01-24 23:00:00"          # fin de l'horizon temporel
     time_step = "1 hour"                      # on peut mettre "15 min" ou "30 min" aussi
-    consumption_satisfaction = 90             # % du temps où la consommation est satisfaite
+    consumption_satisfaction = 100             # % du temps où la consommation est satisfaite
     UB = 1e10
 
-    allow_consumption_shedding = False                   # si True, on doit satisfaire la charge entre shed_hour_start et shed_hour_end
+    allow_consumption_shedding = False            # si True, on doit satisfaire la charge entre shed_hour_start et shed_hour_end
     shedding_hour_start = 0                       # heure de départ autorisation de non satisfaction de la charge
     shedding_hour_end = 4                         # heure de fin autorisation de non satisfaction de la charge
 
-    MIP_GAP = 0.8
+    MIP_GAP = 0.1
     MAX_WORKERS = 4
     GUROBI_THREADS = 5
 
-    pv_p_wp_fixed_list = list(range(5000, 20000, 1000))     # puissance installée en W
-    p0_list=[0] if with_diesel_generator==0 else list(range(2000, 6000, 2000))
+    pv_p_wp_fixed_list = list(range(43000, 44000, 1000))     # puissance installée en W
+    p0_list=[0] if with_diesel_generator==0 else list(range(1000, 51000, 10000))
 
     jobs = [(p0, pv) for p0 in p0_list for pv in pv_p_wp_fixed_list]
-    # results_p0 = []
-    # total_cost_list=[]
-    # pv_wp_list=[]
-    # bat_capa_list=[]
 
     rows_all = []
 
-    # lcc_grid = np.full((len(p0_list), len(pv_p_wp_fixed_list)), np.nan)
-    # bat_grid = np.full((len(p0_list), len(pv_p_wp_fixed_list)), np.nan)
     t_start_total = datetime.datetime.now()
-
-    # for i_p0, p0 in enumerate(p0_list):
-    #     print(f"\n===== Étude pour p0 = {p0} W ==================================================================================================================================================================")
-    #     for j_pv, pv_p_wp_fixed in enumerate(pv_p_wp_fixed_list):
-    #         print(f"\n===== Étude pour PV fixé = {pv_p_wp_fixed} W (p0={p0}) =====")
-
 
     # -----------------------------
     # Fichiers d'entrée (24 jours)
     # -----------------------------
     scenario_load_files = [
-                    "microgrid_consumption/scenarios_24_days/24_days_example_1_1h.csv",
-                    "microgrid_consumption/scenarios_24_days/24_days_example_2_1h.csv"
-                    # "microgrid_consumption/scenarios_24_days/24_days_example_3_1h.csv",
-                    # "microgrid_consumption/scenarios_24_days/24_days_example_4_1h.csv",
-                    # "microgrid_consumption/scenarios_24_days/24_days_example_5_1h.csv"
-
-                    # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_1.csv", 0.2),
-                    # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_2.csv", 0.3),
-                    # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_3.csv", 0.2),
-                    # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_4.csv", 0.2),
-                    # multiply_by("microgrid_consumption/scenarios_24_days/24_days_example_5.csv", 0.3)
+                    "microgrid_consumption/Real_consumption/one_year_formatted.csv"
+                    # "microgrid_consumption/microgrid_consumption_examples/24_days_s1_1h.csv",
+                    # "microgrid_consumption/microgrid_consumption_examples/24_days_s2_1h.csv",
+                    # "microgrid_consumption/microgrid_consumption_examples/24_days_s3_1h.csv",
+                    # "microgrid_consumption/microgrid_consumption_examples/24_days_s4_1h.csv",
+                    # "microgrid_consumption/microgrid_consumption_examples/24_days_s5_1h.csv"
                 ]
     print(f"scenario files :\n" + "\n".join(scenario_load_files))
 
@@ -369,27 +431,7 @@ if __name__ == "__main__":
 
             rows_all.extend(r["rows"])
 
-
     save_results_in_tab(with_diesel_generator, rows_all, pv_p_wp_fixed_list)
-
-    rows_all.sort(key=lambda d: d["pv_fixed"])
-    pv_wp_list      = [r["pv_wp"] for r in rows_all]
-    total_cost_list = [r["total_cost"] for r in rows_all]
-    bat_capa_list   = [r["bat_emax_t0"] for r in rows_all]
-
-    # view_sizing_evolution_wih_diesel(p0_list, total_cost_list, pv_wp_list, bat_capa_list, "results_image")
-
-    # Dans le cas où on a une seule valeur de p0_diesel et où on fait varier p_wp_fixed
-    # plot_lcc_and_battery_vs_pv(pv_wp_list, total_cost_list, bat_capa_list, out_dir="results_image")
-
-    # plot_3d_lcc_and_battery(
-    #     p_diesel_list=p0_list,
-    #     pv_fixed_list=pv_p_wp_fixed_list,
-    #     lcc_grid=lcc_grid,
-    #     bat_grid=bat_grid,
-    #     out_dir="results_image",
-    #     prefix="study"
-    # )
 
     t_end_total = datetime.datetime.now()
     dt_total_script = (t_end_total - t_start_total).total_seconds()

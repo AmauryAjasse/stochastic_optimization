@@ -70,40 +70,63 @@ def compute_diesel_energy_wh(m, s, dt_s: float) -> float:
     dt_h = dt_s / 3600.0
     return float(sum(value(m.gen[s].p[t]) * dt_h for t in m.time))
 
-def scenario_metrics_df(m, prob, step_s):
+# def scenario_metrics_df(m, step_s):
+#     dt_h = step_s / 3600.0
+#     T = len(list(m.time))
+#
+#     rows = []
+#     for s in m.S:
+#         # Attention: si is_served n'est pas strictement binaire (tolérances MIP),
+#         # on le "seuille" pour un comptage robuste.
+#         served_steps = sum(1 if value(m.is_served[s, t]) >= 0.5 else 0 for t in m.time)
+#         sat_time = served_steps / T  # fraction du temps servi
+#
+#         unserved_Wh = sum(value(m.p_unserved[s, t]) * dt_h for t in m.time)  # W * h = Wh
+#
+#         # Curtailment PV: on lit directement la variable du bon scénario
+#         pv_curt_Wh = 0.0
+#         if hasattr(m.pv[s], "p_curt"):
+#             pv_curt_Wh = sum(value(m.pv[s].p_curt[t]) * dt_h for t in m.time)
+#
+#         rows.append({
+#             "scenario": int(s),
+#             "sat_time_%": 100.0 * sat_time,
+#             "unserved_Wh": float(unserved_Wh),
+#             "pv_curt_Wh": float(pv_curt_Wh),
+#         })
+#
+#     df = pd.DataFrame(rows).sort_values("scenario").reset_index(drop=True)
+#
+#     # valeurs attendues
+#     sat_expected = (df["prob"] * df["sat_time_%"]).sum()
+#     unserved_expected = (df["prob"] * df["unserved_Wh"]).sum()
+#     pvcurt_expected = (df["prob"] * df["pv_curt_Wh"]).sum()
+#
+#     return df, sat_expected, unserved_expected, pvcurt_expected
+
+def scenario_metrics_df(m, step_s):
     dt_h = step_s / 3600.0
     T = len(list(m.time))
 
     rows = []
     for s in m.S:
-        # Attention: si is_served n'est pas strictement binaire (tolérances MIP),
-        # on le "seuille" pour un comptage robuste.
         served_steps = sum(1 if value(m.is_served[s, t]) >= 0.5 else 0 for t in m.time)
         sat_time = served_steps / T  # fraction du temps servi
 
-        unserved_Wh = sum(value(m.p_unserved[s, t]) * dt_h for t in m.time)  # W * h = Wh
+        unserved_Wh = sum(value(m.p_unserved[s, t]) * dt_h for t in m.time)  # W*h=Wh
 
-        # Curtailment PV: on lit directement la variable du bon scénario
         pv_curt_Wh = 0.0
         if hasattr(m.pv[s], "p_curt"):
             pv_curt_Wh = sum(value(m.pv[s].p_curt[t]) * dt_h for t in m.time)
 
         rows.append({
             "scenario": int(s),
-            "prob": float(prob[s]),
             "sat_time_%": 100.0 * sat_time,
             "unserved_Wh": float(unserved_Wh),
             "pv_curt_Wh": float(pv_curt_Wh),
         })
 
-    df = pd.DataFrame(rows).sort_values("scenario").reset_index(drop=True)
-
-    # valeurs attendues
-    sat_expected = (df["prob"] * df["sat_time_%"]).sum()
-    unserved_expected = (df["prob"] * df["unserved_Wh"]).sum()
-    pvcurt_expected = (df["prob"] * df["pv_curt_Wh"]).sum()
-
-    return df, sat_expected, unserved_expected, pvcurt_expected
+    return pd.DataFrame(rows).sort_values("scenario").reset_index(drop=True)
 
 def read_load_as_W(csv_path, value_candidates=("aggregate_wh","consumption_wh","value","load_wh")):
     """
@@ -193,3 +216,28 @@ def save_results_in_tab(with_diesel_generator, rows_all, pv_p_wp_fixed_list):
     df_results.to_csv(csv_path, index=False)
 
     print(f"✅ Résultats enregistrés : {csv_path}")
+
+def load_energy_metrics_from_csv(load_csv_path: str, start_h: int = 9, end_h: int = 16) -> tuple[float, float]:
+    """
+    Retourne :
+      - total_energy_Wh : énergie totale (Wh) sur tout le CSV
+      - pct_energy_in_window : % de l'énergie entre [start_h, end_h) (en %)
+
+    Le CSV doit avoir : timestamp, aggregate_wh (comme tes 24_days_example_x.csv)
+    """
+    df = pd.read_csv(load_csv_path)
+    if not {"timestamp", "aggregate_wh"}.issubset(df.columns):
+        raise ValueError(f"Colonnes attendues: timestamp, aggregate_wh. Trouvées: {set(df.columns)}")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    total_Wh = float(df["aggregate_wh"].sum())
+
+    if total_Wh <= 0:
+        return 0.0, 0.0
+
+    hours = df["timestamp"].dt.hour
+    mask = (hours >= start_h) & (hours < end_h)
+    window_Wh = float(df.loc[mask, "aggregate_wh"].sum())
+
+    pct = 100.0 * window_Wh / total_Wh
+    return total_Wh, pct

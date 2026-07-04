@@ -95,8 +95,8 @@ def diesel_generator_V2(gen, **options):
     cost_opex          = options.get('cost_opex', 0.01)  # €/W/an
 
     # === Données de linéarisation ===
-    norm_P_points = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]   # p/p0
-    eta_points    = [0.0, 0.188, 0.260, 0.299, 0.323, 0.339]  # rendement
+    norm_P_points = [0.0, 0.1, 0.2, 0.3, 0.4, 0.6, 0.8, 1.0]   # p/p0
+    eta_points    = [0.0, 0.121, 0.188, 0.231, 0.260, 0.299, 0.323, 0.339]  # rendement
 
     # === Paramètres ===
     gen.p0               = Param(initialize=p0, within=PositiveReals)

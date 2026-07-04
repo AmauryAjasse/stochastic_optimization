@@ -4,6 +4,8 @@ from typing import Optional, Sequence
 from datetime import date, datetime, timedelta
 import matplotlib.dates as mdates
 
+water_pump_SM = [0, 0, 0, 0, 0, 0, 70, 140, 150, 60, 30, 30, 30, 30, 50, 70, 150, 200, 90, 30, 0, 0, 0, 0]
+
 school_odou = [30, 30, 30, 30, 30, 30,
           80, 30, 155, 155, 375, 320,
           220, 120, 170, 350, 350, 375,
@@ -184,18 +186,58 @@ def decortiquerie_annual_profile_2023(
         annual.extend(daily)
 
     if plot:
-        # --- PROFIL HORAIRE ---
+        # ==========================
+        # Construction de l'axe temps
+        # ==========================
         t0 = datetime(2023, 1, 1, 0, 0)
         ts = [t0 + timedelta(hours=i) for i in range(len(annual))]
 
+        # ==========================
+        # Graphe 1 : année complète
+        # ==========================
         fig, ax = plt.subplots(figsize=(14, 4))
+
         ax.plot(ts, annual, linewidth=0.8)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        ax.set_title("Mills — annual profile 2023 (0 from may to oct. and week-ends)")
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+
+        ax.tick_params(axis='both', labelsize=18)
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
+
+        # =====================================
+        # Graphe 2 : zoom du 6 au 12 février
+        # =====================================
+
+        zoom_start = datetime(2023, 2, 6, 0, 0)
+        zoom_end = datetime(2023, 2, 12, 23, 0)
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        ax.plot(ts, annual, linewidth=0.8)
+
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
+        # Un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Un tick secondaire toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        ax.tick_params(axis='both', labelsize=18)
+
         ax.grid(True, linestyle="--", alpha=0.4)
         fig.autofmt_xdate()
         plt.tight_layout()
@@ -204,16 +246,12 @@ def decortiquerie_annual_profile_2023(
     return annual
 
 def water_pump_annual_profile(
+    base_profile: Sequence[float],
     year: int = 2023,
-    power_w: float = 3000.0,
-    window_start_h: float = 7.0,
-    window_end_h: float = 22.0,
-    target_hours: float = 4.0,
-    jitter_hours: float = 0.5,
-    n_blocks: Optional[int] = None,   # None = nombre de blocs aléatoire
-    min_block: float = 0.25,          # 15 min mini par bloc
-    seed: Optional[int] = None,       # graine globale (pour reproductibilité)
-    plot: bool = False,
+    noise_amp: float = 100.0,        # bruit horaire uniforme dans [-noise_amp, +noise_amp]
+    seed: Optional[int] = None,      # graine optionnelle (reproductibilité)
+    clip_at_zero: bool = True,       # empêche les valeurs négatives après bruit
+    plot: bool = False               # trace le profil horaire annuel si True
 ) -> list:
     """
     Construit le profil horaire (Wh) de la pompe à eau sur une année complète.
@@ -221,44 +259,74 @@ def water_pump_annual_profile(
     - Chaque jour est généré via random_decortiquerie_daily_profile(...) avec les paramètres ci-dessus.
 
     Returns:
-        list[float]: 24 * nb_jours valeurs (Wh/heure).
+        list[float]: profil horaire annuel (Wh).
     """
-    # bornes annuelles
+    if len(base_profile) != 24:
+        raise ValueError("base_profile doit contenir 24 valeurs (0h..23h).")
+
+    rng = np.random.default_rng(seed)
+
     start = date(year, 1, 1)
     end = date(year + 1, 1, 1)
     n_days = (end - start).days
 
-    # générateur de sous-seeds par jour (si seed globale fournie)
-    day_rng = np.random.default_rng(seed) if seed is not None else None
-
     annual = []
-    for d in range(n_days):
-        day_seed = None if day_rng is None else int(day_rng.integers(0, 2**32 - 1))
-        daily = random_decortiquerie_daily_profile(
-            power_w=power_w,
-            window_start_h=window_start_h,
-            window_end_h=window_end_h,
-            target_hours=target_hours,
-            jitter_hours=jitter_hours,
-            n_blocks=n_blocks,
-            min_block=min_block,
-            seed=day_seed,
-            plot=False,  # on trace à l'échelle annuelle ci-dessous si demandé
-        )
-        annual.extend(daily)
+    for _ in range(n_days):
+        base = np.asarray(base_profile, dtype=float)
+        noise = rng.uniform(-noise_amp, +noise_amp, size=24)
+        day = base + noise
+        if clip_at_zero:
+            day = np.clip(day, 0.0, None)
+        annual.extend(day.tolist())
 
     if plot:
         t0 = datetime(year, 1, 1, 0, 0)
         ts = [t0 + timedelta(hours=i) for i in range(len(annual))]
 
+        # ==========================
+        # Graphe 1 : année complète
+        # ==========================
         fig, ax = plt.subplots(figsize=(14, 4))
+
         ax.plot(ts, annual, linewidth=0.8)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        ax.set_title(f"Water pump — annual profile {year}")
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+
+        ax.tick_params(axis="both", labelsize=18)
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
+
+        # =====================================
+        # Graphe 2 : zoom du 6 au 12 février
+        # =====================================
+        zoom_start = datetime(year, 2, 6, 0, 0)
+        zoom_end = datetime(year, 2, 12, 23, 0)
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        ax.plot(ts, annual, linewidth=0.8)
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
+        # Graduation principale : un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Graduation secondaire : toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        ax.tick_params(axis="both", labelsize=18)
+
         ax.grid(True, linestyle="--", alpha=0.4)
         fig.autofmt_xdate()
         plt.tight_layout()
@@ -317,14 +385,51 @@ def school_annual_profile(
     if plot:
         t0 = datetime(year, 1, 1, 0, 0)
         ts = [t0 + timedelta(hours=i) for i in range(len(annual))]
+
+        # ==========================
+        # Graphe 1 : année complète
+        # ==========================
         fig, ax = plt.subplots(figsize=(14, 4))
+
         ax.plot(ts, annual, linewidth=0.8)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        ax.set_title(f"School — annual profile {year} (0 on week-end)")
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+
+        ax.tick_params(axis="both", labelsize=18)
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
+
+        # =====================================
+        # Graphe 2 : zoom du 6 au 12 février
+        # =====================================
+        zoom_start = datetime(year, 2, 6, 0, 0)
+        zoom_end = datetime(year, 2, 12, 23, 0)
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        ax.plot(ts, annual, linewidth=0.8)
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
+        # Graduation principale : un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Graduation secondaire : toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        ax.tick_params(axis="both", labelsize=18)
+
         ax.grid(True, linestyle="--", alpha=0.4)
         fig.autofmt_xdate()
         plt.tight_layout()
@@ -378,14 +483,51 @@ def health_center_annual_profile(
     if plot:
         t0 = datetime(year, 1, 1, 0, 0)
         ts = [t0 + timedelta(hours=i) for i in range(len(annual))]
+
+        # ==========================
+        # Graphe 1 : année complète
+        # ==========================
         fig, ax = plt.subplots(figsize=(14, 4))
+
         ax.plot(ts, annual, linewidth=0.8)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        ax.set_title(f"Health-center — annual profile {year}")
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+
+        ax.tick_params(axis="both", labelsize=18)
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
+
+        # =====================================
+        # Graphe 2 : zoom du 6 au 12 février
+        # =====================================
+        zoom_start = datetime(year, 2, 6, 0, 0)
+        zoom_end = datetime(year, 2, 12, 23, 0)
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        ax.plot(ts, annual, linewidth=0.8)
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
+        # Graduation principale : un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Graduation secondaire : toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        ax.tick_params(axis="both", labelsize=18)
+
         ax.grid(True, linestyle="--", alpha=0.4)
         fig.autofmt_xdate()
         plt.tight_layout()
@@ -428,14 +570,51 @@ def church_annual_profile(
     if plot:
         t0 = datetime(year, 1, 1, 0, 0)
         ts = [t0 + timedelta(hours=i) for i in range(len(annual))]
+
+        # ==========================
+        # Graphe 1 : année complète
+        # ==========================
         fig, ax = plt.subplots(figsize=(14, 4))
+
         ax.plot(ts, annual, linewidth=0.8)
-        ax.set_xlabel("Date")
-        ax.set_ylabel("Energy consumption (Wh)")
-        ax.set_title(f"CHURCH — annual profile {year}")
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
         ax.xaxis.set_minor_locator(mdates.WeekdayLocator(byweekday=mdates.MO))
+
+        ax.tick_params(axis="both", labelsize=18)
+
+        ax.grid(True, linestyle="--", alpha=0.4)
+        fig.autofmt_xdate()
+        plt.tight_layout()
+        plt.show()
+
+        # =====================================
+        # Graphe 2 : zoom du 6 au 12 février
+        # =====================================
+        zoom_start = datetime(year, 2, 6, 0, 0)
+        zoom_end = datetime(year, 2, 12, 23, 0)
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        ax.plot(ts, annual, linewidth=0.8)
+        ax.set_xlim(zoom_start, zoom_end)
+
+        ax.set_xlabel("Date", fontsize=18)
+        ax.set_ylabel("Energie consommée (Wh)", fontsize=18)
+
+        # Graduation principale : un tick par jour
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
+
+        # Graduation secondaire : toutes les 6 heures
+        ax.xaxis.set_minor_locator(mdates.HourLocator(interval=6))
+
+        ax.tick_params(axis="both", labelsize=18)
+
         ax.grid(True, linestyle="--", alpha=0.4)
         fig.autofmt_xdate()
         plt.tight_layout()
@@ -455,21 +634,21 @@ if __name__ == '__main__':
     # mills = random_decortiquerie_daily_profile(plot=True)
 
     """Maintenant le profil des mills sur une année"""
-    # annual = decortiquerie_annual_profile_2023(seed=2025, plot=True)
+    # annual = decortiquerie_annual_profile_2023(seed=2023, plot=True)
 
     """WATER PUMP"""
     """On fait la représentation du profil des water pumps sur une journée."""
     # water_pump = random_decortiquerie_daily_profile(power_w=3000.0,window_start_h=7.0, window_end_h=22.0, target_hours=4.0, jitter_hours=0.5, plot=True)
 
     """Maintenant le profil des water pumps sur une année"""
-    # annual_wp = water_pump_annual_profile(year=2023, power_w=3000.0, window_start_h=7.0, window_end_h=22.0, target_hours=4.0, jitter_hours=0.5, plot=True)
+    # annual_wp = water_pump_annual_profile(water_pump_SM, year=2023, noise_amp=0.0, seed=2025, plot=True)
 
     """SCHOOL"""
-    # annual_school = school_annual_profile(school_odou, year=2023, noise_amp=100.0, seed=2025, plot=True)
+    # annual_school = school_annual_profile(school_odou, year=2023, noise_amp=0.0, seed=2025, plot=True)
 
     """HEALTH CENTER"""
-    # annual_hc = health_center_annual_profile(health_center_odou, year=2023, noise_amp=100.0, seed=2025, plot=True)
+    # annual_hc = health_center_annual_profile(health_center_odou, year=2023, noise_amp=0.0, seed=2025, plot=True)
 
     """PLACE OF WORSHIP"""
-    annual_church = church_annual_profile(church_odou, year=2023, noise_amp=20.0, seed=2025, plot=True)
+    # annual_church = church_annual_profile(church_odou, year=2023, noise_amp=0.0, seed=2025, plot=True)
 

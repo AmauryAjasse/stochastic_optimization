@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import json
+import matplotlib.dates as mdates
 
 from pyomo.environ import *
 from tabulate import tabulate
@@ -146,7 +147,7 @@ def negative_part_abs(s: Optional[pd.Series]) -> Optional[pd.Series]:
     return (-s.clip(upper=0.0))
 
 
-def compute_and_save_cost_breakdown(m, prob: Dict, t0, out_root: str, filename: str = "cost_breakdown.json") -> Dict:
+def compute_and_save_cost_breakdown(m, t0, out_root: str, filename: str = "cost_breakdown.json") -> Dict:
     """
     Recalcule un breakdown CAPEX / (OPEX attendu) sur l'horizon
     (comme dans main) et le sauvegarde en JSON dans out_root.
@@ -162,7 +163,7 @@ def compute_and_save_cost_breakdown(m, prob: Dict, t0, out_root: str, filename: 
     for s in m.S:
         opex_pv_s = value(m.pv[s].cost_opex) * value(m.pv[s1].p_wp) * PV_YEARS
         opex_bat_s = value(m.bat[s].cost_opex) * value(m.bat[s1].emax[t0]) * BAT_YEARS
-        opex_exp += prob[s] * (opex_pv_s + opex_bat_s)
+        opex_exp += (opex_pv_s + opex_bat_s)
 
     cost_breakdown = {
         "capex_pv": capex_pv_val,
@@ -180,7 +181,7 @@ def compute_and_save_cost_breakdown(m, prob: Dict, t0, out_root: str, filename: 
     return cost_breakdown
 
 
-def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, results_root: str, pv_installed_W: int, p0_diesel_W: int, with_diesel_generator: int = 0) -> List[Dict]:
+def export_scenario_timeseries_and_plots(m, horizon, results_root: str, pv_installed_W: int, p0_diesel_W: int, with_diesel_generator: int = 0) -> List[Dict]:
     """
     Pour chaque scénario s :
       - construit un DataFrame avec consumption_W, pv_W, bat_W, soc, emax, etc.
@@ -216,7 +217,18 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, results_root: s
         pv_W = series_from_component(m.pv[s], "p", m.time, time_idx)
         bat_W = series_from_component(m.bat[s], "p", m.time, time_idx)
         gen_W = None
-        if with_diesel_generator != 0 and hasattr(m, "gen"):
+        # if with_diesel_generator != 0 and hasattr(m, "gen"):
+        #     gen_W = series_from_component(m.gen[s], "p", m.time, time_idx)
+        gen_W = None
+        if with_diesel_generator == 2 and hasattr(m, "gen"):
+            gen_W = pd.Series(
+                [
+                    sum(float(value(m.gen[s, k].p[t])) for k in m.KGEN)
+                    for t in m.time
+                ],
+                index=time_idx
+            )
+        elif with_diesel_generator != 0 and hasattr(m, "gen"):
             gen_W = series_from_component(m.gen[s], "p", m.time, time_idx)
 
         # Séries optionnelles
@@ -264,15 +276,36 @@ def export_scenario_timeseries_and_plots(m, horizon, prob: Dict, results_root: s
         curtail_kWh     = kwh_from_W_series(curtail_W, dt_s)
         gen_kWh = kwh_from_W_series(gen_W, dt_s) if gen_W is not None else 0.0
 
+        if gen_W is not None and p0_diesel_W > 0:
+            gen_active = gen_W[gen_W > 0.0]
+            if len(gen_active) > 0:
+                diesel_eff_mean_active = float((gen_active / p0_diesel_W).mean())
+                diesel_usage_rate_pct = float(100.0 * len(gen_active) / len(gen_W))
+            else:
+                diesel_eff_mean_active = np.nan
+                diesel_usage_rate_pct = 0.0
+        else:
+            diesel_eff_mean_active = np.nan
+            diesel_usage_rate_pct = np.nan if with_diesel_generator == 0 else 0.0
+
+        if emax_Wh is not None:
+            e0 = float(emax_Wh.iloc[0])
+            ef = float(emax_Wh.iloc[-1])
+            battery_capacity_final_pct = float(100.0 * ef / e0) if e0 > 0 else np.nan
+        else:
+            battery_capacity_final_pct = np.nan
+
         rows_summary.append({
             "scenario": s,
-            "probability": prob[s],
             "consumption_kWh":    consumption_kWh,
             "pv_to_load_kWh":     pv_kWh,
             "bat_discharge_kWh":  bat_dis_kWh,
             "bat_charge_kWh":     bat_chg_kWh,
             "pv_curtail_kWh":     curtail_kWh,
             "gen_kWh": gen_kWh,
+            "diesel_efficiency_mean_active": diesel_eff_mean_active,
+            "diesel_usage_rate_pct": diesel_usage_rate_pct,
+            "battery_capacity_final_pct": battery_capacity_final_pct,
         })
 
         # Tracés (3 figures légères)
@@ -600,3 +633,73 @@ def plot_3d_lcc_and_battery(
         out_dir=out_dir,
         filename_prefix=f"{prefix}_BAT"
     )
+
+def plot_week_powers(
+        csv_file,
+        start="2023-02-06 00:00:00",
+        end="2023-02-12 23:00:00"):
+    """
+    Affiche les puissances sur une semaine.
+
+    Paramètres
+    ----------
+    csv_file : str
+        Chemin vers le fichier timeseries.csv généré par le main.
+    start : str
+        Début de la période.
+    end : str
+        Fin de la période.
+    """
+
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
+    # Lecture
+    df = pd.read_csv(csv_file)
+
+    # L'index temporel est la première colonne (timestamp)
+    df.rename(columns={df.columns[0]: "Time"}, inplace=True)
+    df["Time"] = pd.to_datetime(df["Time"])
+    df.set_index("Time", inplace=True)
+
+    # Extraction de la semaine
+    df = df.loc[start:end]
+
+    # Conversion W -> kW
+    cons = df["consumption_W"] / 1000
+    pv = df["pv_W"] / 1000
+    bat = df["bat_W"] / 1000
+    gen = df["gen_W"] / 1000 if "gen_W" in df.columns else None
+
+    plt.figure(figsize=(14, 5))
+
+    plt.plot(cons.index, cons, label="Consommation")
+    plt.plot(pv.index, pv, label="PV non écrêté")
+    plt.plot(bat.index, bat, label="Puissance batterie")
+    if gen is not None:
+        plt.plot(gen.index, gen, label="Générateur diesel")
+
+    plt.xlabel("Temps", fontsize=18)
+    plt.ylabel("Puissance (kW)", fontsize=18)
+
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
+
+    plt.grid(True)
+    plt.legend(fontsize=16)
+    ax = plt.gca()
+
+    # Format JJ/MM
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%d/%m"))
+
+    # Une graduation par jour
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=1))
+
+    # Incliner les dates si besoin
+    plt.xticks(rotation=45, fontsize=18)
+
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == "__main__":
+    plot_week_powers("results/with_diesel/p0_8000.0W/pv_25000.0W/scenario_1/timeseries.csv")
